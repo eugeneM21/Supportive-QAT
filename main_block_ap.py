@@ -33,7 +33,10 @@ def evaluate(model, tokenizer, args, logger):
     results = {}
 
     if args.eval_ppl:
-        datasets = ["wikitext2", "c4"]
+        # we don't need c4 now, can add it in later
+        datasets = ["wikitext2", 
+                    #"c4"
+                    ]
         ppl_results = test_ppl(model, tokenizer, datasets, args.ppl_seqlen)
         for dataset in ppl_results:
             logger.info(f'{dataset} perplexity: {ppl_results[dataset]:.2f}')
