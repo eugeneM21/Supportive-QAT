@@ -10,3 +10,4 @@ triton==2.2.0
 termcolor
 sentencepiece
 protobuf
+peft==0.12.0

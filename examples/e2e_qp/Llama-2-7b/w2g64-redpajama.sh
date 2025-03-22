@@ -1,12 +1,12 @@
 CUDA_VISIBLE_DEVICES=0 python main_e2e_qp.py \
-    --quant_model_path ./output/block_ap_models/Llama-2-7b-w2g64 \
-    --model_family Llama-2 \
+    --quant_model_path ./output/block_ap_models/Meta-Llama-3-8B-Copy \
+    --model_family Llama-3 \
     --wbits 2 \
     --group_size 64 \
     --learning_rate 2e-5 \
     --dataset redpajama \
     --dataset_format pt \
-    --output_dir ./output/e2e-qp-output/Llama-2-7b-w2g64-redpajama-4096 \
+    --output_dir ./output/e2e-qp-output/Meta-Llama-3-8B-Instruct-w2g64 \
     --do_train True \
     --pt_context_len 4096 \
     --per_device_train_batch_size 4 \

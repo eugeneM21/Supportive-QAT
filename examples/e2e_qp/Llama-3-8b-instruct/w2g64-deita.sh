@@ -1,5 +1,5 @@
 CUDA_VISIBLE_DEVICES=2 python main_e2e_qp.py \
-    --quant_model_path ./output/block_ap_models/Llama-3-8b-instruct-w2g64 \
+    --quant_model_path ./output/block_ap_models/Llama-3-8B-Instruct-w2g64 \
     --model_family llama3 \
     --wbits 2 \
     --group_size 64 \

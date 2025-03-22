@@ -16,6 +16,7 @@ def round_ste(x: torch.Tensor):
 def round_up_ste(x: torch.Tensor):
     return (x.ceil() - x).detach() + x
 
+
 def round_down_ste(x: torch.Tensor):
     return (x.floor() - x).detach() + x
 

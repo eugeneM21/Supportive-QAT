@@ -1,5 +1,6 @@
 import math
 from logging import getLogger
+from enum import Enum
 
 import numpy as np
 import torch
@@ -26,6 +27,12 @@ class TritonModuleMixin:
 class QuantLinear(nn.Module, TritonModuleMixin):
     QUANT_TYPE = "triton"
 
+    class QuantType(Enum):
+        REGULAR = 0
+        UP = 1
+        DOWN = 1
+
+
     def __init__(
         self,
         bits,
@@ -34,6 +41,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         outfeatures,
         bias,
         trainable=False,
+        quant_type=QuantType.REGULAR,
         **kwargs
     ):
         super().__init__()
@@ -176,6 +184,10 @@ def load_quantized_model(model_path, wbits, group_size):
 
     # import pdb;pdb.set_trace()
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+    print(type(tokenizer))
+    if not hasattr(tokenizer, 'model_max_length'):
+        raise ValueError("Loaded tokenizer is invalid. Check the model path and files.")
+
     config = AutoConfig.from_pretrained(model_path)
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(config=config,torch_dtype=torch.float16, trust_remote_code=True)

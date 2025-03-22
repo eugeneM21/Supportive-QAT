@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import quantize.int_linear_fake as int_linear_fake
 import quantize.int_linear_real as int_linear_real
-# from int_linear_fake import QuantLinear
+from int_linear_fake import QuantLinear
 
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import copy

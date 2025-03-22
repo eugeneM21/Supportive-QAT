@@ -245,7 +245,7 @@ def get_accelerate_model(args, checkpoint_dir):
         max_memory = {'': max_memory[local_rank]}
 
 
-    
+    print("Loading model from", args.quant_model_path)
     model, tokenizer = load_quantized_model(args.quant_model_path,args.wbits, args.group_size)
     tokenizer.model_max_length = args.pt_context_len
     
