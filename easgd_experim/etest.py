@@ -7,7 +7,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 from torchvision.models import resnet18
-from quantize.quantizer import UniformAffineQuantizer, RoundUpQuantizer, RoundDownQuantizer
+
+# Quantizer definitions
+from quantize.quantizer import (
+    UniformAffineQuantizer,
+    RoundUpQuantizer,
+    RoundDownQuantizer
+)
+
+# Custom Linear layer + model patching
+from easgd_experim.utils_quant import (
+    QuantLinear,
+    replace_linear_layers
+)
+
 
 # Step 1: Load the CIFAR-10 dataset and apply transformations
 transform = transforms.Compose([
@@ -50,27 +63,6 @@ def dequantize_ste(x_q: torch.Tensor, offset: float, scale: float):
 def fake_quantize(x):
     nx, offset, scale = quantize_ste(x, 2)
     return dequantize_ste(nx, offset, scale)
-
-class QuantLinear(nn.Module):
-    def __init__(self, in_features, out_features, bias=True, quantizer_cls=UniformAffineQuantizer):
-        super().__init__()
-        self.linear = nn.Linear(in_features, out_features, bias)
-        self.quantizer = quantizer_cls(weight=self.linear.weight, group_size=self.linear.weight.shape[-1])
-
-    def forward(self, x):
-        quantized_weight = self.quantizer(self.linear.weight)
-        return nn.functional.linear(x, quantized_weight, self.linear.bias)
-
-def replace_linear_layers(model, quantizer_cls):
-    for name, module in model.named_children():
-        if isinstance(module, nn.Linear):
-            in_features = module.in_features
-            out_features = module.out_features
-            bias = module.bias is not None
-            setattr(model, name, QuantLinear(in_features, out_features, bias, quantizer_cls))
-        else:
-            replace_linear_layers(module, quantizer_cls)
-    return model
 
 class EASGD():
     def __init__(self, model_class, num_models, quantizer_classes=None):
@@ -183,32 +175,34 @@ class EASGD():
 
         return train_losses, test_losses
 
-num_epochs = 10
-quantizer_classes = [RoundUpQuantizer, RoundDownQuantizer]
-easgd = EASGD(resnet18, num_models=2, quantizer_classes=quantizer_classes)
-train_losses, test_losses = easgd.train_easgd(trainloader, testloader, num_epochs=num_epochs)
-train_losses_reg, test_losses_reg = easgd.train_regular(trainloader, testloader, num_epochs=num_epochs)
+if __name__ == "__main__":
+    num_epochs = 10
+    quantizer_classes = [RoundUpQuantizer, RoundDownQuantizer]
+    easgd = EASGD(resnet18, num_models=2, quantizer_classes=quantizer_classes)
 
-plt.figure(figsize=(12, 6))
+    train_losses, test_losses = easgd.train_easgd(trainloader, testloader, num_epochs=num_epochs)
+    train_losses_reg, test_losses_reg = easgd.train_regular(trainloader, testloader, num_epochs=num_epochs)
 
-# Plot training loss
-plt.subplot(1, 2, 1)
-plt.plot(range(num_epochs), train_losses, label='Training Loss (EASGD)')
-plt.plot(range(num_epochs), train_losses_reg, label='Training Loss (Regular)')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.title('Training Loss')
-plt.legend()
+    plt.figure(figsize=(12, 6))
 
-# Plot test loss
-plt.subplot(1, 2, 2)
-plt.plot(range(num_epochs), test_losses, label='Test Loss (EASGD)')
-plt.plot(range(num_epochs), test_losses_reg, label='Test Loss (Regular)')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.title('Test Loss')
-plt.legend()
+    # Plot training loss
+    plt.subplot(1, 2, 1)
+    plt.plot(range(num_epochs), train_losses, label='Training Loss (EASGD)')
+    plt.plot(range(num_epochs), train_losses_reg, label='Training Loss (Regular)')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.legend()
 
-plt.tight_layout()
-plt.savefig("losses.png")
-plt.show()
+    # Plot test loss
+    plt.subplot(1, 2, 2)
+    plt.plot(range(num_epochs), test_losses, label='Test Loss (EASGD)')
+    plt.plot(range(num_epochs), test_losses_reg, label='Test Loss (Regular)')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Test Loss')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig("losses.png")
+    plt.show()
