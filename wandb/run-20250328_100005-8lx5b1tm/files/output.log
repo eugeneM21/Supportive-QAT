@@ -1,0 +1,12 @@
+  0%|                                                                                                                                   | 0/4096 [00:04<?, ?it/s]
+{'input_ids': tensor([[ 3276, 59457,   812,  ...,   701, 21120,   374]], device='cuda:0'), 'attention_mask': tensor([[1, 1, 1,  ..., 1, 1, 1]], device='cuda:0'), 'labels': tensor([[ 3276, 59457,   812,  ...,   701, 21120,   374]], device='cuda:0')}
+Traceback (most recent call last):
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 819, in <module>
+    train()
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 701, in train
+    train_losses, test_losses = easgd.train_easgd(train_dataloader, None)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 556, in train_easgd
+    train_loss = train_loss / len(**batch)
+                              ^^^^^^^^^^^^
+TypeError: len() takes no keyword arguments

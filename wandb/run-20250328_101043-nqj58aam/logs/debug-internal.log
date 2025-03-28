@@ -1,0 +1,15 @@
+{"time":"2025-03-28T10:10:43.702555252-04:00","level":"INFO","msg":"stream: starting","core version":"0.19.8","symlink path":"/home/intern/ritarka/EfficientQAT/wandb/run-20250328_101043-nqj58aam/logs/debug-core.log"}
+{"time":"2025-03-28T10:10:43.809630892-04:00","level":"INFO","msg":"created new stream","id":"nqj58aam"}
+{"time":"2025-03-28T10:10:43.809668346-04:00","level":"INFO","msg":"stream: started","id":"nqj58aam"}
+{"time":"2025-03-28T10:10:43.810189559-04:00","level":"INFO","msg":"sender: started","stream_id":"nqj58aam"}
+{"time":"2025-03-28T10:10:43.81034876-04:00","level":"INFO","msg":"handler: started","stream_id":"nqj58aam"}
+{"time":"2025-03-28T10:10:43.810400394-04:00","level":"INFO","msg":"writer: Do: started","stream_id":"nqj58aam"}
+{"time":"2025-03-28T10:10:43.984213103-04:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-03-28T10:10:58.042749691-04:00","level":"INFO","msg":"stream: closing","id":"nqj58aam"}
+{"time":"2025-03-28T10:10:58.0427991-04:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-03-28T10:10:58.044134085-04:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-03-28T10:10:58.347303165-04:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-03-28T10:10:58.756795476-04:00","level":"INFO","msg":"handler: closed","stream_id":"nqj58aam"}
+{"time":"2025-03-28T10:10:58.756871992-04:00","level":"INFO","msg":"writer: Close: closed","stream_id":"nqj58aam"}
+{"time":"2025-03-28T10:10:58.756889771-04:00","level":"INFO","msg":"sender: closed","stream_id":"nqj58aam"}
+{"time":"2025-03-28T10:10:58.756980703-04:00","level":"INFO","msg":"stream: closed","id":"nqj58aam"}

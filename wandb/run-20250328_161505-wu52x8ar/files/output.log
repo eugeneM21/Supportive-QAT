@@ -1,0 +1,81 @@
+  1%|█▎                                                                                                                      | 45/4096 [01:44<2:36:08,  2.31s/it]
+Traceback (most recent call last):
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 884, in <module>
+    train()
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 780, in train
+    train_losses, test_losses = easgd.train_regular(train_dataloader, None)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 616, in train_regular
+    outputs = model(**batch)
+              ^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1511, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1520, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/transformers/models/llama/modeling_llama.py", line 1208, in forward
+    outputs = self.model(
+              ^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1511, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1520, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/transformers/models/llama/modeling_llama.py", line 1007, in forward
+    layer_outputs = self._gradient_checkpointing_func(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/_compile.py", line 24, in inner
+    return torch._dynamo.disable(fn, recursive)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py", line 489, in _fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/_dynamo/external_utils.py", line 17, in inner
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/utils/checkpoint.py", line 482, in checkpoint
+    return CheckpointFunction.apply(function, preserve, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/autograd/function.py", line 553, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/utils/checkpoint.py", line 261, in forward
+    outputs = run_function(*args)
+              ^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1511, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1520, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/transformers/models/llama/modeling_llama.py", line 741, in forward
+    hidden_states, self_attn_weights, present_key_value = self.self_attn(
+                                                          ^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1511, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1520, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/transformers/models/llama/modeling_llama.py", line 636, in forward
+    query_states = self.q_proj(hidden_states)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1511, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1520, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/quantize/int_linear_real.py", line 174, in forward
+    zeros = dequant_dim1(self.qzeros, self.bits, self.maxq, self.zeros_dim0, self.zeros_dim1)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/quantize/triton_utils/kernels.py", line 240, in dequant_dim1
+    dequant_kernel_dim1[grid](
+  File "/home/intern/ritarka/EfficientQAT/quantize/triton_utils/custom_autotune.py", line 105, in run
+    return self.fn.run(*args, num_warps=config.num_warps, num_stages=config.num_stages, **kwargs, **config.kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/triton/runtime/jit.py", line 550, in run
+    bin.c_wrapper(
+KeyboardInterrupt

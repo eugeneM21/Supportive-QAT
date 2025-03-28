@@ -8,6 +8,9 @@ import numpy as np
 import importlib
 from packaging import version
 
+import torch.nn as nn
+import torch.optim as optim
+
 import torch
 import transformers
 import argparse
@@ -25,6 +28,10 @@ import os
 import utils
 from quantize.int_linear_real import load_quantized_model,QuantLinear
 from pathlib import Path
+from tqdm import tqdm
+from torch.utils.data import DataLoader
+
+import wandb
 
 
 
@@ -363,11 +370,6 @@ def smart_tokenizer_and_embedding_resize(
         input_embeddings_data[-num_new_tokens:] = input_embeddings_avg
         output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
 
-
-
-
-
-
 def get_last_checkpoint(checkpoint_dir):
     if isdir(checkpoint_dir):
         is_completed = exists(join(checkpoint_dir, 'completed'))
@@ -381,6 +383,314 @@ def get_last_checkpoint(checkpoint_dir):
         print(f"Found a previous checkpoint at: {checkpoint_dir}")
         return checkpoint_dir, is_completed # checkpoint found!
     return None, False # first training
+
+
+##################### EASGD Stuff #########################################
+
+
+class EASGDOptimizer(torch.optim.Optimizer):
+    def __init__(self, central_params, round_up_params, round_down_params, lr=0.01, alpha=0.9, num_virtual_workers=4, swap_steps=5):
+        defaults = dict(lr=lr, alpha=alpha)
+        super().__init__(central_params, defaults)
+
+        # Store multiple copies of parameters (simulating multiple workers)
+        self.num_virtual_workers = num_virtual_workers
+        self.swap_steps = swap_steps
+        self.step_count = 0  # Track number of optimizer steps
+        
+        self.regular_optimizer = torch.optim.AdamW()
+
+        # Create virtual worker copies (each worker stores its own parameter set)
+        self.worker_params = [round_up_params, round_down_params]
+
+        # Store original model parameters for reference
+        self.global_params = list(central_params)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        """ Performs a single optimization step using AdamW with virtual workers. """
+        loss = closure() if closure is not None else None
+
+        # Determine active worker for this step
+        active_worker = self.step_count % self.num_virtual_workers
+        worker_params = self.worker_params[active_worker]
+
+        for group in self.param_groups:
+            lr, alpha = group['lr'], group['alpha']
+            beta1, beta2 = group['betas']
+            eps, weight_decay = group['eps'], group['weight_decay']
+
+            for p, wp in zip(group['params'], worker_params):
+                if p.grad is not None:
+                    grad = p.grad
+                    state = self.state[p]
+
+                    # Initialize state if not present
+                    if 'm' not in state:
+                        state['m'] = torch.zeros_like(p)
+                        state['v'] = torch.zeros_like(p)
+                        state['t'] = 0
+
+                    m, v, t = state['m'], state['v'], state['t']
+                    t += 1
+
+                    # Compute biased first and second moment estimates
+                    m.mul_(beta1).add_(grad, alpha=1 - beta1)
+                    v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+                    # Compute bias-corrected estimates
+                    m_hat = m / (1 - beta1 ** t)
+                    v_hat = v / (1 - beta2 ** t)
+
+                    # Apply weight decay separately (AdamW-style)
+                    p.data.mul_(1 - lr * weight_decay)
+                    update = m_hat / (v_hat.sqrt() + eps)
+
+                    # Worker performs local AdamW step
+                    wp.sub_(lr * update)
+                    
+                    # Elastic averaging step
+                    p.data.add_(alpha * (wp - p.data))
+
+                    # Update state
+                    state['m'], state['v'], state['t'] = m, v, t
+
+        # Swap worker parameters with global model every `swap_steps`
+        if self.step_count % self.swap_steps == 0:
+            for p, wp in zip(self.global_params, worker_params):
+                p.copy_(wp)
+
+        self.step_count += 1
+        return loss
+
+# ========== 2. Trainer Callback to Log Virtual Worker Updates ==========
+class EASGDCallback(transformers.TrainerCallback):
+    def __init__(self, optimizer, log_steps=20):
+        self.optimizer = optimizer
+        self.log_steps = log_steps
+
+    # def on_step_end(self, args=None, state=None, control=None, model=None, **kwargs):
+    #     if state.global_step % self.log_steps == 0:
+    #         print(f"[EASGD] Step {state.global_step}: Using worker {self.optimizer.step_count % self.optimizer.num_virtual_workers}")
+
+def copy_dataloader(dataloader):
+    return DataLoader(
+        dataset=dataloader.dataset,  # Same dataset
+        batch_size=dataloader.batch_size,
+        shuffle=dataloader.shuffle,
+        sampler=dataloader.sampler,  # Ensures same sampling strategy
+        num_workers=dataloader.num_workers,
+        collate_fn=dataloader.collate_fn,
+        pin_memory=dataloader.pin_memory,
+        drop_last=dataloader.drop_last,
+        timeout=dataloader.timeout,
+        worker_init_fn=dataloader.worker_init_fn,
+        multiprocessing_context=dataloader.multiprocessing_context
+    )
+
+class EASGD():
+    def __init__(self, model_list):
+        super().__init__()
+        self.alpha = 0.01
+        self.beta = 0.9
+        self.num_workers = len(model_list) - 1
+
+        self.main_model = model_list[0].cuda()
+        
+        params = []
+        params.append({'params': [p for n, p in self.main_model.named_parameters() if 'scale' in n], 'weight_decay': 0.0, 'lr': 2e-5})
+        self.main_optimizer = AdamW(params)
+
+        self.models = model_list[1:]
+        self.optimizers = []
+
+        for model in self.models:
+            model.load_state_dict(self.main_model.state_dict())
+            
+            params = []
+            params.append({'params': [p for n, p in model.named_parameters() if 'scale' in n], 'weight_decay': 0.0, 'lr': 2e-5})
+            optimizer = AdamW(params)
+
+            self.optimizers.append(optimizer)
+            
+    def _initialize_weights(self):
+        def init_func(m):
+            if isinstance(m, (nn.Linear, nn.Conv2d)):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+        self.main_model.apply(init_func)
+        for model in self.models:
+            model.load_state_dict(self.main_model.state_dict())
+
+    def synchronize_models(self):
+        with torch.no_grad():
+            for model in self.models:
+                for local_param, central_param in zip(model.parameters(), self.main_model.parameters()):
+                    diff = local_param.data - central_param.data
+                    local_param.data -= self.alpha * diff
+                    central_param.data += (self.beta / self.num_workers) * diff
+
+    def train_easgd(self, trainloader, testloader):
+        
+        wandb.init(project="train_easgd", config={"epochs": 1, "batch_size": trainloader.batch_size})
+        
+        self._initialize_weights()
+        
+        train_losses = []
+        test_losses = []
+        model_choice = 0
+        
+        for model in self.models:
+            model.to("cuda")
+        
+        # for model in self.models:
+        #     wandb.watch(model, log="all", log_freq=10)
+
+        for i, batch in enumerate(tqdm(trainloader)):
+            model = self.models[model_choice]
+            optimizer = self.optimizers[model_choice]
+
+            # inputs, labels = inputs.cuda(), labels.cuda()
+            # batch = batch.cuda()
+            
+            # print(batch)
+
+            outputs = model(**batch)
+            loss = outputs.loss
+            # loss = criterion(outputs, labels)
+            
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            train_loss = loss.item()
+
+            model_choice = (model_choice + 1) % self.num_workers
+
+            if model_choice == 0:
+                self.synchronize_models()            
+        
+            train_loss = train_loss / len(batch["input_ids"])
+            train_losses.append(train_loss)
+            
+            wandb.log({"batch": i, "loss": train_loss})
+
+        # Step 5: Validation after every epoch
+        # test_loss = 0
+        # with torch.no_grad():
+        #     for inputs, labels in testloader:
+        #         inputs, labels = inputs.cuda(), labels.cuda()
+        #         outputs = self.main_model(inputs)
+        #         test_loss += criterion(outputs, labels).item()
+
+        # test_loss = test_loss / len(testloader)
+        # test_losses.append(test_loss)
+
+        # print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.2f}, Test Loss: {0:.2f}')
+        
+        wandb.finish()
+
+        return train_losses, train_losses
+    
+    def train_regular(self, trainloader, testloader):
+        wandb.init(project="train_regular", config={"epochs": 1, "batch_size": trainloader.batch_size})
+        
+        self._initialize_weights()
+        
+        train_losses = []
+        test_losses = []
+        model_choice = 0
+        
+        # wandb.watch(self.main_model, log="all", log_freq=10)
+        
+        for model in self.models:
+            model.to("cpu")
+    
+        model = self.main_model
+        optimizer = self.main_optimizer
+
+        for i, batch in enumerate(tqdm(trainloader)):
+
+            outputs = model(**batch)
+            loss = outputs.loss
+            
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            train_loss = loss.item()
+        
+            train_loss = train_loss / len(batch["input_ids"])
+            train_losses.append(train_loss)
+            
+            wandb.log({"batch": i, "loss": train_loss})
+        
+        wandb.finish()
+
+        return train_losses, train_losses
+    
+    
+    def train_interleave(self, trainloader, regular_model):
+        
+        params = []
+        params.append({'params': [p for n, p in regular_model.named_parameters() if 'scale' in n], 'weight_decay': 0.0, 'lr': 2e-5})
+        regular_optimizer = AdamW(params)
+        
+        wandb.init(project="train_interleave", config={"epochs": 1, "batch_size": trainloader.batch_size})
+        
+        self._initialize_weights()
+        
+        train_losses = []
+        test_losses = []
+        model_choice = 0
+        
+        self.main_model.to("cpu")
+        for model in self.models:
+            model.to("cpu")
+        self.models[model_choice].to("cuda")
+        
+        for i, batch in enumerate(tqdm(trainloader)):
+            model = self.models[model_choice]
+            optimizer = self.optimizers[model_choice]
+
+            # Run and test EASGD model first
+            outputs = model(**batch)
+            loss = outputs.loss
+            
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            torch.cuda.empty_cache()
+
+            loss_easgd = loss.item()
+
+            model_choice = (model_choice + 1) % self.num_workers
+
+            model.to("cpu")
+            if model_choice == 0:
+                self.synchronize_models()
+            self.models[model_choice].to("cuda", non_blocking=True)
+                
+                
+            # Run and tes the regular model afterwards
+            outputs = regular_model(**batch)
+            loss = outputs.loss
+            loss.backward()
+            regular_optimizer.step()
+            regular_optimizer.zero_grad()
+            
+            loss_reg = loss.item()
+            torch.cuda.empty_cache()
+        
+            loss_easgd = loss_easgd / len(batch["input_ids"])
+            loss_reg = loss_reg / len(batch["input_ids"])
+                        
+            wandb.log({"loss_easgd": loss_easgd, "loss_reg": loss_reg})        
+        wandb.finish()
+
+        return train_losses, train_losses
 
 def train():
     hfparser = transformers.HfArgumentParser((
@@ -401,10 +711,28 @@ def train():
     if completed_training:
         print('Detected that training was already completed!')
 
-    model, tokenizer = get_accelerate_model(args, checkpoint_dir)
+    model1, tokenizer = get_accelerate_model(args, checkpoint_dir)
+    model2, _ = get_accelerate_model(args, checkpoint_dir)
+    model3, _ = get_accelerate_model(args, checkpoint_dir)
+    # model4, _ = get_accelerate_model(args, checkpoint_dir)
 
-    model.config.use_cache = False
-    print('loaded model')
+    
+    # model2.to("cpu")
+    # model3.to("cpu")
+
+    model1.config.use_cache = False
+    model2.config.use_cache = False
+    model3.config.use_cache = False
+    # model4.config.use_cache = False
+
+    
+    models = nn.ModuleList([
+        model1,
+        model2,
+        model3,
+    ])
+    
+    print('loaded models')
     set_seed(args.seed)
 
     data_module = make_data_module(tokenizer=tokenizer, args=args)
@@ -412,15 +740,16 @@ def train():
     
 
     optimizer_grouped_parameters = []
-    for name, module in model.named_modules():
+    for name, module in model1.named_modules():
         # if isinstance(module, LoraLayer):
         if isinstance(module, QuantLinear) and not 'head' in name:
             module.scales.requires_grad = True
-    optimizer_grouped_parameters.append({'params': [p for n, p in model.named_parameters() if 'scale' in n], 'weight_decay': 0.0, 'lr': args.learning_rate})
+    optimizer_grouped_parameters.append({'params': [p for n, p in model1.named_parameters() if 'scale' in n], 'weight_decay': 0.0, 'lr': args.learning_rate})
     optimizer = AdamW(optimizer_grouped_parameters)
+    # optimizer = EASGDOptimizer()
 
     trainer = Seq2SeqTrainer(
-        model=model,
+        model=model1,
         tokenizer=tokenizer,
         args=training_args,
         optimizers=(optimizer, None),
@@ -436,11 +765,25 @@ def train():
                 trainer.log(results)
 
         trainer.add_callback(PPLvalCallback)
+            
+    train_dataloader = trainer.get_train_dataloader()
+    # test_dataloader = trainer.get_test_dataloader()
+    optimizer = trainer.optimizer
+    trainer.model.train()
+    
+    assert next(trainer.model.parameters()).is_cuda
+    assert train_dataloader is not None
+    # assert test_dataloader is not None
+    
+    easgd = EASGD(models)
+    # train_losses, test_losses = easgd.train_easgd(train_dataloader, None)
+    train_losses, test_losses = easgd.train_regular(train_dataloader, None)
+    # train_losses, test_losses = easgd.train_interleave(train_dataloader, model4)
     
     # Verifying the datatypes and parameter counts before training.
-    print_trainable_parameters(args, model)
+    print_trainable_parameters(args, model1)
     dtypes = {}
-    for _, p in model.named_parameters():
+    for _, p in model1.named_parameters():
         dtype = p.dtype
         if dtype not in dtypes: dtypes[dtype] = 0
         dtypes[dtype] += p.numel()
@@ -455,13 +798,16 @@ def train():
 
     print(args.output_dir)
     if args.do_train:
-        logger.info("*** Train ***")
-        train_result = trainer.train(args.resume_from_checkpoint)
-        metrics = train_result.metrics
-        trainer.log_metrics("train", metrics)
-        trainer.save_metrics("train", metrics)
-        trainer.save_state()
-        all_metrics.update(metrics)
+        # logger.info("*** Train ***")
+        # train_result = trainer.train(args.resume_from_checkpoint)
+        # metrics = train_result.metrics
+        # trainer.log_metrics("train", metrics)
+        # trainer.save_metrics("train", metrics)
+        # trainer.save_state()
+        # all_metrics.update(metrics)
+        pass
+    
+
     # Evaluation
     if args.do_eval:
         logger.info("*** Evaluate ***")
@@ -500,7 +846,7 @@ def train():
 
     if args.eval_tasks != "":
         task_list = args.eval_tasks.split(',')
-        lm_eval_model = HFLM(pretrained=model, batch_size=32)
+        lm_eval_model = HFLM(pretrained=model1, batch_size=32)
         task_manager = lm_eval.tasks.TaskManager()
         results = lm_eval.simple_evaluate( # call simple_evaluate
         model=lm_eval_model,
@@ -515,7 +861,7 @@ def train():
         logger.info(f'Average Acc: {total_acc/len(task_list)*100:.2f}%')
 
     if args.do_mmlu_eval:
-        lm_eval_model = HFLM(pretrained=model, batch_size=16)
+        lm_eval_model = HFLM(pretrained=model1, batch_size=16)
         task_manager = lm_eval.tasks.TaskManager()
         results = lm_eval.simple_evaluate( # call simple_evaluate
         model=lm_eval_model,
@@ -531,4 +877,41 @@ def train():
         logger.info(f"Average MMLU Acc: {total_acc/len(results['results'])*100:.2f}%")
 
 if __name__ == "__main__":
+    
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+
     train()
+
+
+"""
+{'loss': 3.1468, 'grad_norm': 36.760902404785156, 'learning_rate': 2.5e-06, 'epoch': 0.0}                                                                        
+{'loss': 3.2766, 'grad_norm': 49.082725524902344, 'learning_rate': 5e-06, 'epoch': 0.01}                                                                         
+{'loss': 3.1771, 'grad_norm': 26.532615661621094, 'learning_rate': 7.500000000000001e-06, 'epoch': 0.01}                                                         
+{'loss': 3.1338, 'grad_norm': 25.933536529541016, 'learning_rate': 1e-05, 'epoch': 0.02}                                                                         
+{'loss': 2.9631, 'grad_norm': 11.033796310424805, 'learning_rate': 1.25e-05, 'epoch': 0.02}                                                                      
+{'loss': 2.7949, 'grad_norm': 16.794940948486328, 'learning_rate': 1.5000000000000002e-05, 'epoch': 0.02}                                                        
+{'loss': 2.8053, 'grad_norm': 11.00554370880127, 'learning_rate': 1.7500000000000002e-05, 'epoch': 0.03}                                                         
+{'loss': 2.8361, 'grad_norm': 12.150263786315918, 'learning_rate': 2e-05, 'epoch': 0.03}                                                                         
+{'loss': 2.5876, 'grad_norm': 10.196847915649414, 'learning_rate': 1.9999197656053288e-05, 'epoch': 0.04}                                                        
+{'loss': 2.7587, 'grad_norm': 6.955831050872803, 'learning_rate': 1.9996790752964305e-05, 'epoch': 0.04}                                                         
+{'loss': 2.6696, 'grad_norm': 6.497739315032959, 'learning_rate': 1.9992779676965884e-05, 'epoch': 0.04}                                                         
+{'loss': 2.3153, 'grad_norm': 8.48418140411377, 'learning_rate': 1.998716507171053e-05, 'epoch': 0.05}                                                           
+{'loss': 2.5931, 'grad_norm': 7.923129081726074, 'learning_rate': 1.9979947838167152e-05, 'epoch': 0.05}                                                         
+{'loss': 2.7494, 'grad_norm': 4.34723424911499, 'learning_rate': 1.9971129134476474e-05, 'epoch': 0.05}                                                          
+{'loss': 2.7559, 'grad_norm': 2.928806781768799, 'learning_rate': 1.9960710375765212e-05, 'epoch': 0.06}                                                         
+{'loss': 2.505, 'grad_norm': 3.3300206661224365, 'learning_rate': 1.994869323391895e-05, 'epoch': 0.06}                                                          
+{'loss': 2.6401, 'grad_norm': 2.6023330688476562, 'learning_rate': 1.9935079637313906e-05, 'epoch': 0.07}                                                        
+{'loss': 2.5097, 'grad_norm': 3.2068424224853516, 'learning_rate': 1.991987177050743e-05, 'epoch': 0.07}                                                         
+{'loss': 2.4963, 'grad_norm': 2.491368293762207, 'learning_rate': 1.9903072073887507e-05, 'epoch': 0.07}                                                         
+{'loss': 2.7886, 'grad_norm': 2.6198699474334717, 'learning_rate': 1.9884683243281117e-05, 'epoch': 0.08}                                                        
+{'loss': 2.615, 'grad_norm': 2.111182928085327, 'learning_rate': 1.9864708229521637e-05, 'epoch': 0.08}                                                          
+{'loss': 2.5648, 'grad_norm': 2.416806221008301, 'learning_rate': 1.9843150237975343e-05, 'epoch': 0.09}                                                         
+{'loss': 2.5197, 'grad_norm': 2.5512654781341553, 'learning_rate': 1.9820012728027044e-05, 'epoch': 0.09}                                                        
+{'loss': 2.3437, 'grad_norm': 3.1389317512512207, 'learning_rate': 1.9795299412524948e-05, 'epoch': 0.09}                                                        
+{'loss': 2.6723, 'grad_norm': 2.0275588035583496, 'learning_rate': 1.976901425718487e-05, 'epoch': 0.1}                                                          
+{'loss': 2.4105, 'grad_norm': 2.005434274673462, 'learning_rate': 1.9741161479953872e-05, 'epoch': 0.1}                                                          
+{'loss': 2.2706, 'grad_norm': 2.812422037124634, 'learning_rate': 1.9711745550333392e-05, 'epoch': 0.11}                                                         
+{'loss': 2.4461, 'grad_norm': 2.4632608890533447, 'learning_rate': 1.9680771188662044e-05, 'epoch': 0.11}                                                        
+{'loss': 2.3819, 'grad_norm': 2.072753667831421, 'learning_rate': 1.9648243365358145e-05, 'epoch': 0.11}                                                         
+"""

@@ -1,0 +1,11 @@
+  0%|                                                                                                                                   | 0/4096 [00:04<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 817, in <module>
+    train()
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 699, in train
+    train_losses, test_losses = easgd.train_easgd(train_dataloader, None)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 547, in train_easgd
+    train_loss += loss.item()
+    ^^^^^^^^^^
+UnboundLocalError: cannot access local variable 'train_loss' where it is not associated with a value

@@ -131,16 +131,19 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
                 loacal_dataset = "/cpfs01/user/chenmengzhao/huggingface/datasets/togethercomputer___red_pajama-data-1_t-sample"
                 dataset = load_dataset(loacal_dataset)
             except:
-                dataset = load_dataset("togethercomputer/RedPajama-Data-1T-Sample")   
+                loacal_dataset = "togethercomputer/RedPajama-Data-1T-Sample"
+                dataset = load_dataset("togethercomputer/RedPajama-Data-1T-Sample", trust_remote_code=True)   
             if "validation" not in dataset.keys():
                 validation_split = args.eval_dataset_size
                 dataset["validation"] = load_dataset(
                     loacal_dataset,
                     split=f"train[:{validation_split}]",
+                    trust_remote_code=True
                 )
                 dataset["train"] = load_dataset(
                     loacal_dataset,
                     split=f"train[{validation_split}:]",
+                    trust_remote_code=True
                 )
             return dataset  
         else:

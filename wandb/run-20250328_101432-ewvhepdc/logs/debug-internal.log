@@ -1,0 +1,15 @@
+{"time":"2025-03-28T10:14:32.109542068-04:00","level":"INFO","msg":"stream: starting","core version":"0.19.8","symlink path":"/home/intern/ritarka/EfficientQAT/wandb/run-20250328_101432-ewvhepdc/logs/debug-core.log"}
+{"time":"2025-03-28T10:14:32.213693326-04:00","level":"INFO","msg":"created new stream","id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:32.213707534-04:00","level":"INFO","msg":"stream: started","id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:32.213766495-04:00","level":"INFO","msg":"writer: Do: started","stream_id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:32.213778079-04:00","level":"INFO","msg":"sender: started","stream_id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:32.213946826-04:00","level":"INFO","msg":"handler: started","stream_id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:32.368359022-04:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-03-28T10:14:35.586057397-04:00","level":"INFO","msg":"stream: closing","id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:35.586108537-04:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-03-28T10:14:35.587175507-04:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-03-28T10:14:35.908920458-04:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-03-28T10:14:36.024931589-04:00","level":"INFO","msg":"handler: closed","stream_id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:36.024983883-04:00","level":"INFO","msg":"sender: closed","stream_id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:36.024972122-04:00","level":"INFO","msg":"writer: Close: closed","stream_id":"ewvhepdc"}
+{"time":"2025-03-28T10:14:36.025119194-04:00","level":"INFO","msg":"stream: closed","id":"ewvhepdc"}

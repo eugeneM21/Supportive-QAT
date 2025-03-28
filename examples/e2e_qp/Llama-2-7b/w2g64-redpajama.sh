@@ -9,7 +9,7 @@ CUDA_VISIBLE_DEVICES=0 python main_e2e_qp.py \
     --output_dir ./output/e2e-qp-output/Meta-Llama-3-8B-Instruct-w2g64 \
     --do_train True \
     --pt_context_len 4096 \
-    --per_device_train_batch_size 4 \
+    --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 8 \
     --logging_steps 1 \

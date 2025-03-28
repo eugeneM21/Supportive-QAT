@@ -1,0 +1,11 @@
+  2%|██▉                                                                                                                    | 101/4096 [03:44<2:27:51,  2.22s/it]
+Traceback (most recent call last):
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 819, in <module>
+    train()
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 701, in train
+    train_losses, test_losses = easgd.train_easgd(train_dataloader, None)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 549, in train_easgd
+    train_loss = loss.item()
+                 ^^^^^^^^^^^
+KeyboardInterrupt

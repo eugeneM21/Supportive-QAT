@@ -1,0 +1,14 @@
+  2%|█▉                                                                                                                      | 64/4096 [06:15<6:34:21,  5.87s/it]
+Traceback (most recent call last):
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 884, in <module>
+    train()
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 781, in train
+    train_losses, test_losses = easgd.train_interleave(train_dataloader, model4)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 662, in train_interleave
+    loss.backward()
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/_tensor.py", line 522, in backward
+    torch.autograd.backward(
+  File "/home/intern/anaconda3/envs/efficientqat/lib/python3.11/site-packages/torch/autograd/__init__.py", line 266, in backward
+    Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+KeyboardInterrupt

@@ -1,0 +1,13 @@
+  0%|                                                                                                                        | 1/4096 [00:10<12:13:52, 10.75s/it]
+Traceback (most recent call last):
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 884, in <module>
+    train()
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 781, in train
+    train_losses, test_losses = easgd.train_interleave(train_dataloader, model4)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 673, in train_interleave
+    self.synchronize_models()
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 531, in synchronize_models
+    diff = local_param.data - central_param.data
+           ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~
+RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!

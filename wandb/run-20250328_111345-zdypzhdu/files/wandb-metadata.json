@@ -1,0 +1,102 @@
+{
+  "os": "Linux-5.15.0-134-generic-x86_64-with-glibc2.31",
+  "python": "CPython 3.11.0",
+  "startedAt": "2025-03-28T15:13:45.409794Z",
+  "args": [
+    "--quant_model_path",
+    "./output/block_ap_models/Meta-Llama-3-8B-Copy",
+    "--model_family",
+    "Llama-3",
+    "--wbits",
+    "2",
+    "--group_size",
+    "64",
+    "--learning_rate",
+    "2e-5",
+    "--dataset",
+    "redpajama",
+    "--dataset_format",
+    "pt",
+    "--output_dir",
+    "./output/e2e-qp-output/Meta-Llama-3-8B-Instruct-w2g64",
+    "--do_train",
+    "True",
+    "--pt_context_len",
+    "4096",
+    "--per_device_train_batch_size",
+    "1",
+    "--per_device_eval_batch_size",
+    "4",
+    "--gradient_accumulation_steps",
+    "8",
+    "--logging_steps",
+    "1",
+    "--save_strategy",
+    "epoch",
+    "--training_strategy",
+    "epochs",
+    "--evaluation_strategy",
+    "steps",
+    "--eval_steps",
+    "64",
+    "--max_train_samples",
+    "4096",
+    "--num_train_epochs",
+    "1",
+    "--eval_dataset_size",
+    "64",
+    "--bf16",
+    "--data_seed",
+    "42",
+    "--max_grad_norm",
+    "0.3",
+    "--eval_tasks",
+    "piqa,arc_easy,arc_challenge,hellaswag,winogrande",
+    "--preprocessing_num_workers",
+    "32",
+    "--do_ppl_eval"
+  ],
+  "program": "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py",
+  "codePath": "main_e2e_qp.py",
+  "git": {
+    "remote": "https://github.com/Ritarka/Supportive-QAT.git",
+    "commit": "9833dc797b4b79a1e9fe26f7cf5b46c7edd378ff"
+  },
+  "email": "ritarkasamanta@gmail.com",
+  "root": "/home/intern/ritarka/EfficientQAT",
+  "host": "biometrics-thanos-6",
+  "executable": "/home/intern/anaconda3/envs/efficientqat/bin/python",
+  "codePathLocal": "main_e2e_qp.py",
+  "cpu_count": 28,
+  "cpu_count_logical": 56,
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "gpu_count": 2,
+  "disk": {
+    "/": {
+      "total": "3936290357248",
+      "used": "3709138382848"
+    }
+  },
+  "memory": {
+    "total": "269728354304"
+  },
+  "cpu": {
+    "count": 28,
+    "countLogical": 56
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "memoryTotal": "25757220864",
+      "cudaCores": 16384,
+      "architecture": "Ada"
+    },
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "memoryTotal": "25757220864",
+      "cudaCores": 16384,
+      "architecture": "Ada"
+    }
+  ],
+  "cudaVersion": "12.4"
+}

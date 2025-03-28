@@ -1,0 +1,8 @@
+  0%|                                                                                                                                   | 0/4096 [00:00<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 817, in <module>
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 699, in train
+  File "/home/intern/ritarka/EfficientQAT/main_e2e_qp.py", line 532, in train_easgd
+    model = self.models[model_choice]
+                        ^^^^^^^^^^^^
+UnboundLocalError: cannot access local variable 'model_choice' where it is not associated with a value
