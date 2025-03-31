@@ -54,6 +54,8 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2 ** self.bits - 1
+        self.quant_type = quant_type
+        
         self.register_buffer(
             'qweight',
             torch.zeros((math.ceil(infeatures / (32 // self.bits)), outfeatures), dtype=torch.int32)
@@ -120,12 +122,30 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
         intweight = []
         for idx in range(self.infeatures):
-            intweight.append(
-                torch.round(
-                    (
-                        W[:, idx] + scale_zeros[g_idx[idx]]) / self.scales[g_idx[idx]]
-                ).to(torch.int)[:, None]
-            )
+            if self.quant_type == self.QuantType.REGULAR:
+                intweight.append(
+                    torch.round(
+                        (
+                            W[:, idx] + scale_zeros[g_idx[idx]]) / self.scales[g_idx[idx]]
+                    ).to(torch.int)[:, None]
+                )
+            elif self.quant_type == self.QuantType.UP:
+                intweight.append(
+                    torch.ceil(
+                        (
+                            W[:, idx] + scale_zeros[g_idx[idx]]) / self.scales[g_idx[idx]]
+                    ).to(torch.int)[:, None]
+                )
+            elif self.quant_type == self.QuantType.DOWN:
+                intweight.append(
+                    torch.floor(
+                        (
+                            W[:, idx] + scale_zeros[g_idx[idx]]) / self.scales[g_idx[idx]]
+                    ).to(torch.int)[:, None]
+                )
+            else:
+                raise NotImplementedError("Only REGULAR, UP, DOWN quantization are supported.")
+            
         intweight = torch.cat(intweight, dim=1)
         intweight = intweight.t().contiguous()
         intweight = intweight.numpy().astype(np.uint32)
@@ -179,7 +199,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         return out
 
 
-def load_quantized_model(model_path, wbits, group_size):
+def load_quantized_model(model_path, wbits, group_size, quant_linear_type=QuantLinear.QuantType.REGULAR):
     print(f"Loading quantized model from {model_path}")
 
     # import pdb;pdb.set_trace()
@@ -196,7 +216,7 @@ def load_quantized_model(model_path, wbits, group_size):
         layer = layers[i]
         named_linears = get_named_linears(layer, torch.nn.Linear)
         for name, module in named_linears.items():
-            q_linear = QuantLinear(wbits, group_size, module.in_features,module.out_features,not module.bias is None)
+            q_linear = QuantLinear(wbits, group_size, module.in_features,module.out_features,not module.bias is None, quant_type=quant_linear_type)
             q_linear.to(next(layer.parameters()).device)
             set_op_by_name(layer, name, q_linear)
     torch.cuda.empty_cache()

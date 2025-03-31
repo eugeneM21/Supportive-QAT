@@ -26,13 +26,17 @@ from datautils_e2e import make_data_module
 from bitsandbytes.optim import AdamW
 import os
 import utils
-from quantize.int_linear_real import load_quantized_model,QuantLinear
+import math
+from math import log
+
+from quantize.int_linear_real import load_quantized_model
 from pathlib import Path
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
 import wandb
-
+from quantize.quantizer import UniformAffineQuantizer, RoundUpQuantizer, RoundDownQuantizer
+from quantize.int_linear_real import QuantLinear
 
 
 
@@ -234,7 +238,7 @@ class GenerationArguments:
 
 
 
-def get_accelerate_model(args, checkpoint_dir):
+def get_accelerate_model(args, checkpoint_dir, quant_linear_type=QuantLinear.QuantType.REGULAR):
 
     if torch.cuda.is_available():
         n_gpus = torch.cuda.device_count()
@@ -253,7 +257,7 @@ def get_accelerate_model(args, checkpoint_dir):
 
 
     print("Loading model from", args.quant_model_path)
-    model, tokenizer = load_quantized_model(args.quant_model_path,args.wbits, args.group_size)
+    model, tokenizer = load_quantized_model(args.quant_model_path,args.wbits, args.group_size, quant_linear_type)
     tokenizer.model_max_length = args.pt_context_len
     
     compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))        
@@ -384,95 +388,6 @@ def get_last_checkpoint(checkpoint_dir):
         return checkpoint_dir, is_completed # checkpoint found!
     return None, False # first training
 
-
-##################### EASGD Stuff #########################################
-
-
-class EASGDOptimizer(torch.optim.Optimizer):
-    def __init__(self, central_params, round_up_params, round_down_params, lr=0.01, alpha=0.9, num_virtual_workers=4, swap_steps=5):
-        defaults = dict(lr=lr, alpha=alpha)
-        super().__init__(central_params, defaults)
-
-        # Store multiple copies of parameters (simulating multiple workers)
-        self.num_virtual_workers = num_virtual_workers
-        self.swap_steps = swap_steps
-        self.step_count = 0  # Track number of optimizer steps
-        
-        self.regular_optimizer = torch.optim.AdamW()
-
-        # Create virtual worker copies (each worker stores its own parameter set)
-        self.worker_params = [round_up_params, round_down_params]
-
-        # Store original model parameters for reference
-        self.global_params = list(central_params)
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        """ Performs a single optimization step using AdamW with virtual workers. """
-        loss = closure() if closure is not None else None
-
-        # Determine active worker for this step
-        active_worker = self.step_count % self.num_virtual_workers
-        worker_params = self.worker_params[active_worker]
-
-        for group in self.param_groups:
-            lr, alpha = group['lr'], group['alpha']
-            beta1, beta2 = group['betas']
-            eps, weight_decay = group['eps'], group['weight_decay']
-
-            for p, wp in zip(group['params'], worker_params):
-                if p.grad is not None:
-                    grad = p.grad
-                    state = self.state[p]
-
-                    # Initialize state if not present
-                    if 'm' not in state:
-                        state['m'] = torch.zeros_like(p)
-                        state['v'] = torch.zeros_like(p)
-                        state['t'] = 0
-
-                    m, v, t = state['m'], state['v'], state['t']
-                    t += 1
-
-                    # Compute biased first and second moment estimates
-                    m.mul_(beta1).add_(grad, alpha=1 - beta1)
-                    v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-
-                    # Compute bias-corrected estimates
-                    m_hat = m / (1 - beta1 ** t)
-                    v_hat = v / (1 - beta2 ** t)
-
-                    # Apply weight decay separately (AdamW-style)
-                    p.data.mul_(1 - lr * weight_decay)
-                    update = m_hat / (v_hat.sqrt() + eps)
-
-                    # Worker performs local AdamW step
-                    wp.sub_(lr * update)
-                    
-                    # Elastic averaging step
-                    p.data.add_(alpha * (wp - p.data))
-
-                    # Update state
-                    state['m'], state['v'], state['t'] = m, v, t
-
-        # Swap worker parameters with global model every `swap_steps`
-        if self.step_count % self.swap_steps == 0:
-            for p, wp in zip(self.global_params, worker_params):
-                p.copy_(wp)
-
-        self.step_count += 1
-        return loss
-
-# ========== 2. Trainer Callback to Log Virtual Worker Updates ==========
-class EASGDCallback(transformers.TrainerCallback):
-    def __init__(self, optimizer, log_steps=20):
-        self.optimizer = optimizer
-        self.log_steps = log_steps
-
-    # def on_step_end(self, args=None, state=None, control=None, model=None, **kwargs):
-    #     if state.global_step % self.log_steps == 0:
-    #         print(f"[EASGD] Step {state.global_step}: Using worker {self.optimizer.step_count % self.optimizer.num_virtual_workers}")
-
 def copy_dataloader(dataloader):
     return DataLoader(
         dataset=dataloader.dataset,  # Same dataset
@@ -525,12 +440,19 @@ class EASGD():
             model.load_state_dict(self.main_model.state_dict())
 
     def synchronize_models(self):
+        self.main_model.to("cuda")
         with torch.no_grad():
             for model in self.models:
                 for local_param, central_param in zip(model.parameters(), self.main_model.parameters()):
                     diff = local_param.data - central_param.data
                     local_param.data -= self.alpha * diff
                     central_param.data += (self.beta / self.num_workers) * diff
+                    
+        # torch.cuda.empty_cache()  # Clears unused memory
+        # gc.collect()  # Forces garbage collection
+
+                    
+        self.main_model.to("cpu", non_blocking=True)
 
     def train_easgd(self, trainloader, testloader):
         
@@ -541,7 +463,10 @@ class EASGD():
         train_losses = []
         test_losses = []
         model_choice = 0
+        stickiness = 5
+        sticky_count = 0
         
+        self.main_model.to("cpu")
         for model in self.models:
             model.to("cuda")
         
@@ -552,30 +477,40 @@ class EASGD():
             model = self.models[model_choice]
             optimizer = self.optimizers[model_choice]
 
-            # inputs, labels = inputs.cuda(), labels.cuda()
-            # batch = batch.cuda()
-            
-            # print(batch)
-
             outputs = model(**batch)
             loss = outputs.loss
-            # loss = criterion(outputs, labels)
             
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
 
             train_loss = loss.item()
-
-            model_choice = (model_choice + 1) % self.num_workers
-
-            if model_choice == 0:
-                self.synchronize_models()            
-        
+            
             train_loss = train_loss / len(batch["input_ids"])
             train_losses.append(train_loss)
             
-            wandb.log({"batch": i, "loss": train_loss})
+            # Free memory
+            # del batch, outputs, loss
+            # torch.cuda.empty_cache()
+            # gc.collect()
+
+
+            sticky_count += 1
+            if sticky_count > stickiness:
+                sticky_count = 0
+                model_choice = (model_choice + 1) % self.num_workers
+
+                if model_choice == 0:
+                    self.synchronize_models()            
+        
+            
+            mem_allocated = torch.cuda.memory_allocated() / 1e9
+            mem_reserved = torch.cuda.memory_reserved() / 1e9
+            # print(f"Memory allocated: {mem_allocated:.2f} GB")
+            # print(f"Memory reserved: {mem_reserved:.2f} GB")
+
+            
+            wandb.log({"loss": train_loss, "log_batch": log(i), "memory_allocated": mem_allocated, "memory_reserved": mem_reserved})
 
         # Step 5: Validation after every epoch
         # test_loss = 0
@@ -686,11 +621,30 @@ class EASGD():
         
             loss_easgd = loss_easgd / len(batch["input_ids"])
             loss_reg = loss_reg / len(batch["input_ids"])
+            
+            mem_allocated = torch.cuda.memory_allocated() / 1e9
+            mem_reserved = torch.cuda.memory_reserved() / 1e9
+            print(f"Memory allocated: {mem_allocated:.2f} GB")
+            print(f"Memory reserved: {mem_reserved:.2f} GB")
+
                         
             wandb.log({"loss_easgd": loss_easgd, "loss_reg": loss_reg})        
         wandb.finish()
 
         return train_losses, train_losses
+    
+# def replace_linear_layers(args, model, quantizer_cls):
+#     count = 0
+#     sub = 0
+#     for name, module in model.named_children():
+#         if isinstance(module, nn.Linear) or isinstance(module, QuantLinear):
+#             count += 1
+#             setattr(model, name, QuantLinear(module, args.wbits, args.group_size, quantizer_cls))
+#         else:
+#             _, sub = replace_linear_layers(args, module, quantizer_cls)
+#     return model, count + sub
+
+from quantize.utils import set_quant_state
 
 def train():
     hfparser = transformers.HfArgumentParser((
@@ -711,20 +665,25 @@ def train():
     if completed_training:
         print('Detected that training was already completed!')
 
-    model1, tokenizer = get_accelerate_model(args, checkpoint_dir)
-    model2, _ = get_accelerate_model(args, checkpoint_dir)
-    model3, _ = get_accelerate_model(args, checkpoint_dir)
+    model1, tokenizer = get_accelerate_model(args, checkpoint_dir, QuantLinear.QuantType.REGULAR)
+    model2, _         = get_accelerate_model(args, checkpoint_dir, QuantLinear.QuantType.UP)
+    model3, _         = get_accelerate_model(args, checkpoint_dir, QuantLinear.QuantType.DOWN)
     # model4, _ = get_accelerate_model(args, checkpoint_dir)
-
     
     # model2.to("cpu")
     # model3.to("cpu")
 
+    # Enabled gradient checkpointing
     model1.config.use_cache = False
     model2.config.use_cache = False
     model3.config.use_cache = False
     # model4.config.use_cache = False
 
+    # model1, count1 = replace_linear_layers(args, model1, QuantLinear.QuantType.REGULAR)
+    # model2, count2 = replace_linear_layers(args, model2, QuantLinear.QuantType.UP)
+    # model3, count3 = replace_linear_layers(args, model3, QuantLinear.QuantType.DOWN)
+    
+    # print(count1, count2, count3)
     
     models = nn.ModuleList([
         model1,
@@ -736,14 +695,15 @@ def train():
     set_seed(args.seed)
 
     data_module = make_data_module(tokenizer=tokenizer, args=args)
-
     
+    for model in models:    
+        for name, module in model.named_modules():
+            if isinstance(module, QuantLinear) and not 'head' in name:
+                module.scales.requires_grad = True
+        set_quant_state(model, True)
+
 
     optimizer_grouped_parameters = []
-    for name, module in model1.named_modules():
-        # if isinstance(module, LoraLayer):
-        if isinstance(module, QuantLinear) and not 'head' in name:
-            module.scales.requires_grad = True
     optimizer_grouped_parameters.append({'params': [p for n, p in model1.named_parameters() if 'scale' in n], 'weight_decay': 0.0, 'lr': args.learning_rate})
     optimizer = AdamW(optimizer_grouped_parameters)
     # optimizer = EASGDOptimizer()
@@ -756,28 +716,26 @@ def train():
         **{k:v for k,v in data_module.items() if k != 'predict_dataset'},
     )
 
-    if args.do_ppl_eval:
-        class PPLvalCallback(transformers.TrainerCallback):
-            @torch.no_grad()
-            def on_evaluate(self, args=None, state=None, control=None, model=None, **kwargs):
-                results = test_ppl(trainer.model, trainer.tokenizer, datasets=['wikitext2','c4'],ppl_seqlen=2048)
-                logger.info(results)
-                trainer.log(results)
+    # if args.do_ppl_eval:
+    #     class PPLvalCallback(transformers.TrainerCallback):
+    #         @torch.no_grad()
+    #         def on_evaluate(self, args=None, state=None, control=None, model=None, **kwargs):
+    #             results = test_ppl(trainer.model, trainer.tokenizer, datasets=['wikitext2','c4'],ppl_seqlen=2048)
+    #             logger.info(results)
+    #             trainer.log(results)
 
-        trainer.add_callback(PPLvalCallback)
+    #     trainer.add_callback(PPLvalCallback)
             
     train_dataloader = trainer.get_train_dataloader()
     # test_dataloader = trainer.get_test_dataloader()
-    optimizer = trainer.optimizer
     trainer.model.train()
     
     assert next(trainer.model.parameters()).is_cuda
     assert train_dataloader is not None
-    # assert test_dataloader is not None
     
     easgd = EASGD(models)
-    # train_losses, test_losses = easgd.train_easgd(train_dataloader, None)
-    train_losses, test_losses = easgd.train_regular(train_dataloader, None)
+    train_losses, test_losses = easgd.train_easgd(train_dataloader, None)
+    # train_losses, test_losses = easgd.train_regular(train_dataloader, None)
     # train_losses, test_losses = easgd.train_interleave(train_dataloader, model4)
     
     # Verifying the datatypes and parameter counts before training.
@@ -797,89 +755,95 @@ def train():
 
 
     print(args.output_dir)
-    if args.do_train:
-        # logger.info("*** Train ***")
-        # train_result = trainer.train(args.resume_from_checkpoint)
-        # metrics = train_result.metrics
-        # trainer.log_metrics("train", metrics)
-        # trainer.save_metrics("train", metrics)
-        # trainer.save_state()
-        # all_metrics.update(metrics)
-        pass
+    # if args.do_train:
+    #     # logger.info("*** Train ***")
+    #     # train_result = trainer.train(args.resume_from_checkpoint)
+    #     # metrics = train_result.metrics
+    #     # trainer.log_metrics("train", metrics)
+    #     # trainer.save_metrics("train", metrics)
+    #     # trainer.save_state()
+    #     # all_metrics.update(metrics)
+    #     pass
     
 
-    # Evaluation
-    if args.do_eval:
-        logger.info("*** Evaluate ***")
-        metrics = trainer.evaluate(metric_key_prefix="eval")
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
-        all_metrics.update(metrics)
-    # Prediction
-    if args.do_predict:
-        logger.info("*** Predict ***")
-        prediction_output = trainer.predict(test_dataset=data_module['predict_dataset'],metric_key_prefix="predict")
-        prediction_metrics = prediction_output.metrics
-        predictions = prediction_output.predictions
-        predictions = np.where(predictions != -100, predictions, tokenizer.pad_token_id)
-        predictions = tokenizer.batch_decode(
-            predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
-        )
-        with open(os.path.join(args.output_dir, 'predictions.jsonl'), 'w') as fout:
-            for i, example in enumerate(data_module['predict_dataset']):
-                example['prediction_with_input'] = predictions[i].strip()
-                example['prediction'] = predictions[i].replace(example['input'], '').strip()
-                fout.write(json.dumps(example) + '\n')
-        print(prediction_metrics)
-        trainer.log_metrics("predict", prediction_metrics)
-        trainer.save_metrics("predict", prediction_metrics)
-        all_metrics.update(prediction_metrics)
+    # # Evaluation
+    # if args.do_eval:
+    #     logger.info("*** Evaluate ***")
+    #     metrics = trainer.evaluate(metric_key_prefix="eval")
+    #     trainer.log_metrics("eval", metrics)
+    #     trainer.save_metrics("eval", metrics)
+    #     all_metrics.update(metrics)
+    # # Prediction
+    # if args.do_predict:
+    #     logger.info("*** Predict ***")
+    #     prediction_output = trainer.predict(test_dataset=data_module['predict_dataset'],metric_key_prefix="predict")
+    #     prediction_metrics = prediction_output.metrics
+    #     predictions = prediction_output.predictions
+    #     predictions = np.where(predictions != -100, predictions, tokenizer.pad_token_id)
+    #     predictions = tokenizer.batch_decode(
+    #         predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
+    #     )
+    #     with open(os.path.join(args.output_dir, 'predictions.jsonl'), 'w') as fout:
+    #         for i, example in enumerate(data_module['predict_dataset']):
+    #             example['prediction_with_input'] = predictions[i].strip()
+    #             example['prediction'] = predictions[i].replace(example['input'], '').strip()
+    #             fout.write(json.dumps(example) + '\n')
+    #     print(prediction_metrics)
+    #     trainer.log_metrics("predict", prediction_metrics)
+    #     trainer.save_metrics("predict", prediction_metrics)
+    #     all_metrics.update(prediction_metrics)
 
-    if (args.do_train or args.do_eval or args.do_predict):
-        with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
-            fout.write(json.dumps(all_metrics))
+    # if (args.do_train or args.do_eval or args.do_predict):
+    #     with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
+    #         fout.write(json.dumps(all_metrics))
 
-    if args.eval_tasks != "" or args.do_mmlu_eval:
-        import lm_eval
-        from lm_eval.models.huggingface import HFLM
-        from lm_eval.utils import make_table
+    # if args.eval_tasks != "" or args.do_mmlu_eval:
+    #     import lm_eval
+    #     from lm_eval.models.huggingface import HFLM
+    #     from lm_eval.utils import make_table
 
-    if args.eval_tasks != "":
-        task_list = args.eval_tasks.split(',')
-        lm_eval_model = HFLM(pretrained=model1, batch_size=32)
-        task_manager = lm_eval.tasks.TaskManager()
-        results = lm_eval.simple_evaluate( # call simple_evaluate
-        model=lm_eval_model,
-        tasks=task_list,
-        num_fewshot=0,
-        task_manager=task_manager,
-        )
-        logger.info(make_table(results))
-        total_acc = 0
-        for task in task_list:
-            total_acc += results['results'][task]['acc,none']
-        logger.info(f'Average Acc: {total_acc/len(task_list)*100:.2f}%')
+    # if args.eval_tasks != "":
+    #     task_list = args.eval_tasks.split(',')
+    #     lm_eval_model = HFLM(pretrained=model1, batch_size=32)
+    #     task_manager = lm_eval.tasks.TaskManager()
+    #     results = lm_eval.simple_evaluate( # call simple_evaluate
+    #     model=lm_eval_model,
+    #     tasks=task_list,
+    #     num_fewshot=0,
+    #     task_manager=task_manager,
+    #     )
+    #     logger.info(make_table(results))
+    #     total_acc = 0
+    #     for task in task_list:
+    #         total_acc += results['results'][task]['acc,none']
+    #     logger.info(f'Average Acc: {total_acc/len(task_list)*100:.2f}%')
 
-    if args.do_mmlu_eval:
-        lm_eval_model = HFLM(pretrained=model1, batch_size=16)
-        task_manager = lm_eval.tasks.TaskManager()
-        results = lm_eval.simple_evaluate( # call simple_evaluate
-        model=lm_eval_model,
-        tasks=['mmlu'],
-        num_fewshot=5,
-        task_manager=task_manager,
-        cache_requests=True,
-        )
-        logger.info(make_table(results))
-        total_acc = 0
-        for task in results['results']:
-            total_acc += results['results'][task]['acc,none']
-        logger.info(f"Average MMLU Acc: {total_acc/len(results['results'])*100:.2f}%")
+    # if args.do_mmlu_eval:
+    #     lm_eval_model = HFLM(pretrained=model1, batch_size=16)
+    #     task_manager = lm_eval.tasks.TaskManager()
+    #     results = lm_eval.simple_evaluate( # call simple_evaluate
+    #     model=lm_eval_model,
+    #     tasks=['mmlu'],
+    #     num_fewshot=5,
+    #     task_manager=task_manager,
+    #     cache_requests=True,
+    #     )
+    #     logger.info(make_table(results))
+    #     total_acc = 0
+    #     for task in results['results']:
+    #         total_acc += results['results'][task]['acc,none']
+    #     logger.info(f"Average MMLU Acc: {total_acc/len(results['results'])*100:.2f}%")
 
 if __name__ == "__main__":
     
+    import gc
+    gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
+    
+    import torch.backends.cudnn as cudnn
+    cudnn.benchmark = True
+
 
     train()
 
