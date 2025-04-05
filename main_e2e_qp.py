@@ -406,8 +406,8 @@ def copy_dataloader(dataloader):
 class EASGD():
     def __init__(self, model_list):
         super().__init__()
-        self.alpha = 0.01
-        self.beta = 0.9
+        self.alpha = 0.001
+        self.beta = 0.99
         self.num_workers = len(model_list) - 1
 
         self.main_model = model_list[0].cuda()
@@ -439,33 +439,45 @@ class EASGD():
         for model in self.models:
             model.load_state_dict(self.main_model.state_dict())
 
-    def synchronize_models(self):
+    def synchronize_models(self, batch):
         self.main_model.to("cuda")
         with torch.no_grad():
             for model in self.models:
                 for local_param, central_param in zip(model.parameters(), self.main_model.parameters()):
                     diff = local_param.data - central_param.data
                     local_param.data -= self.alpha * diff
-                    central_param.data += (self.beta / self.num_workers) * diff
+                    central_param.data += self.beta * diff
                     
-        # torch.cuda.empty_cache()  # Clears unused memory
-        # gc.collect()  # Forces garbage collection
-
+        for model in self.models:
+            model.to("cpu")
+        
+        loss = self.main_model(**batch).loss
+        wandb.log({"main_loss": loss.item()}, commit=False)
                     
         self.main_model.to("cpu", non_blocking=True)
+        for model in self.models:
+            model.to("cuda")
 
     def train_easgd(self, trainloader, testloader):
-        
-        wandb.init(project="train_easgd", config={"epochs": 1, "batch_size": trainloader.batch_size})
-        
-        self._initialize_weights()
         
         train_losses = []
         test_losses = []
         model_choice = 0
         stickiness = 5
         sticky_count = 0
+
         
+        config = {"epochs": 1, 
+                  "batch_size": trainloader.batch_size,
+                  "alpha": self.alpha,
+                  "beta": self.beta,
+                  "stickiness": stickiness,
+                  "explanation": "slightly modified easgd algorithm",
+                  }
+        wandb.init(project="train_easgd", config=config)
+        
+        self._initialize_weights()
+                
         self.main_model.to("cpu")
         for model in self.models:
             model.to("cuda")
@@ -501,7 +513,7 @@ class EASGD():
                 model_choice = (model_choice + 1) % self.num_workers
 
                 if model_choice == 0:
-                    self.synchronize_models()            
+                    self.synchronize_models(batch)            
         
             
             mem_allocated = torch.cuda.memory_allocated() / 1e9
@@ -509,8 +521,15 @@ class EASGD():
             # print(f"Memory allocated: {mem_allocated:.2f} GB")
             # print(f"Memory reserved: {mem_reserved:.2f} GB")
 
+            logs = {"loss": train_loss,
+                    "batch": i,
+                    "log_batch": log(i + 1, 10), 
+                    }
+            wandb.log(logs)
             
-            wandb.log({"loss": train_loss, "log_batch": log(i), "memory_allocated": mem_allocated, "memory_reserved": mem_reserved})
+            # stop early so we can run experiments faster
+            if i > 1250:
+                break
 
         # Step 5: Validation after every epoch
         # test_loss = 0
