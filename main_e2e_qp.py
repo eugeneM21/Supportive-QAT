@@ -236,7 +236,8 @@ class GenerationArguments:
     length_penalty: Optional[float] = field(default=1.0)
     no_repeat_ngram_size: Optional[int] = field(default=0)
 
-
+global_device = "cuda:0"
+# global_device = "cuda:1"
 
 def get_accelerate_model(args, checkpoint_dir, quant_linear_type=QuantLinear.QuantType.REGULAR):
 
@@ -271,7 +272,7 @@ def get_accelerate_model(args, checkpoint_dir, quant_linear_type=QuantLinear.Qua
     model.config.torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
     # from peft import prepare_model_for_kbit_training
     # model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
-    model.cuda()
+    model.to(global_device)
     model.train()
         
     if tokenizer._pad_token is None:
@@ -404,13 +405,15 @@ def copy_dataloader(dataloader):
     )
 
 class EASGD():
-    def __init__(self, model_list):
+    def __init__(self, model_list, alpha=0.001, beta=0.99, stickiness=5):
         super().__init__()
-        self.alpha = 0.001
-        self.beta = 0.99
+        self.alpha = alpha
+        self.beta = beta
+        self.stickiness = stickiness
+        
         self.num_workers = len(model_list) - 1
 
-        self.main_model = model_list[0].cuda()
+        self.main_model = model_list[0].to(global_device)
         
         params = []
         params.append({'params': [p for n, p in self.main_model.named_parameters() if 'scale' in n], 'weight_decay': 0.0, 'lr': 2e-5})
@@ -440,13 +443,15 @@ class EASGD():
             model.load_state_dict(self.main_model.state_dict())
 
     def synchronize_models(self, batch):
-        self.main_model.to("cuda")
+        self.main_model.to(global_device)
         with torch.no_grad():
             for model in self.models:
                 for local_param, central_param in zip(model.parameters(), self.main_model.parameters()):
                     diff = local_param.data - central_param.data
                     local_param.data -= self.alpha * diff
                     central_param.data += self.beta * diff
+                    
+                model.to("cpu", non_blocking=True)
                     
         for model in self.models:
             model.to("cpu")
@@ -455,15 +460,16 @@ class EASGD():
         wandb.log({"main_loss": loss.item()}, commit=False)
                     
         self.main_model.to("cpu", non_blocking=True)
-        for model in self.models:
-            model.to("cuda")
+        self.models[0].to(global_device)
+        for model in self.models[1:]:
+            model.to(global_device, non_blocking=True)
 
     def train_easgd(self, trainloader, testloader):
         
         train_losses = []
         test_losses = []
         model_choice = 0
-        stickiness = 5
+        stickiness = self.stickiness
         sticky_count = 0
 
         
@@ -471,16 +477,17 @@ class EASGD():
                   "batch_size": trainloader.batch_size,
                   "alpha": self.alpha,
                   "beta": self.beta,
-                  "stickiness": stickiness,
-                  "explanation": "slightly modified easgd algorithm",
+                  "stickiness": self.stickiness,
+                  "explanation": "actual_quantization_hopefully",
                   }
-        wandb.init(project="train_easgd", config=config)
+        run_name = f"fq_alpha_{self.alpha}_beta_{self.beta}_stickiness_{self.stickiness}"
+        wandb.init(project="train_fq_easgd", name=run_name, config=config)
         
         self._initialize_weights()
                 
         self.main_model.to("cpu")
         for model in self.models:
-            model.to("cuda")
+            model.to(global_device)
         
         # for model in self.models:
         #     wandb.watch(model, log="all", log_freq=10)
@@ -510,6 +517,7 @@ class EASGD():
             sticky_count += 1
             if sticky_count > stickiness:
                 sticky_count = 0
+                # self.models[model_choice].to("cpu", non_blocking=True)
                 model_choice = (model_choice + 1) % self.num_workers
 
                 if model_choice == 0:
@@ -520,8 +528,13 @@ class EASGD():
             mem_reserved = torch.cuda.memory_reserved() / 1e9
             # print(f"Memory allocated: {mem_allocated:.2f} GB")
             # print(f"Memory reserved: {mem_reserved:.2f} GB")
+            
+            last_elements = train_losses[-40:] if len(train_losses) >= 40 else train_losses
+            avg_loss =  sum(last_elements) / len(last_elements)
+
 
             logs = {"loss": train_loss,
+                    "avg_loss": avg_loss,
                     "batch": i,
                     "log_batch": log(i + 1, 10), 
                     }
@@ -530,19 +543,6 @@ class EASGD():
             # stop early so we can run experiments faster
             if i > 1250:
                 break
-
-        # Step 5: Validation after every epoch
-        # test_loss = 0
-        # with torch.no_grad():
-        #     for inputs, labels in testloader:
-        #         inputs, labels = inputs.cuda(), labels.cuda()
-        #         outputs = self.main_model(inputs)
-        #         test_loss += criterion(outputs, labels).item()
-
-        # test_loss = test_loss / len(testloader)
-        # test_losses.append(test_loss)
-
-        # print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.2f}, Test Loss: {0:.2f}')
         
         wandb.finish()
 
@@ -652,20 +652,9 @@ class EASGD():
 
         return train_losses, train_losses
     
-# def replace_linear_layers(args, model, quantizer_cls):
-#     count = 0
-#     sub = 0
-#     for name, module in model.named_children():
-#         if isinstance(module, nn.Linear) or isinstance(module, QuantLinear):
-#             count += 1
-#             setattr(model, name, QuantLinear(module, args.wbits, args.group_size, quantizer_cls))
-#         else:
-#             _, sub = replace_linear_layers(args, module, quantizer_cls)
-#     return model, count + sub
-
 from quantize.utils import set_quant_state
 
-def train():
+def train(alpha=0.001, beta=0.99, stickiness=5):
     hfparser = transformers.HfArgumentParser((
         ModelArguments, DataArguments, TrainingArguments, GenerationArguments
     ))
@@ -689,21 +678,15 @@ def train():
     model3, _         = get_accelerate_model(args, checkpoint_dir, QuantLinear.QuantType.DOWN)
     # model4, _ = get_accelerate_model(args, checkpoint_dir)
     
-    # model2.to("cpu")
-    # model3.to("cpu")
+    model2.to("cpu")
+    model3.to("cpu")
 
     # Enabled gradient checkpointing
     model1.config.use_cache = False
     model2.config.use_cache = False
     model3.config.use_cache = False
     # model4.config.use_cache = False
-
-    # model1, count1 = replace_linear_layers(args, model1, QuantLinear.QuantType.REGULAR)
-    # model2, count2 = replace_linear_layers(args, model2, QuantLinear.QuantType.UP)
-    # model3, count3 = replace_linear_layers(args, model3, QuantLinear.QuantType.DOWN)
-    
-    # print(count1, count2, count3)
-    
+        
     models = nn.ModuleList([
         model1,
         model2,
@@ -734,16 +717,6 @@ def train():
         optimizers=(optimizer, None),
         **{k:v for k,v in data_module.items() if k != 'predict_dataset'},
     )
-
-    # if args.do_ppl_eval:
-    #     class PPLvalCallback(transformers.TrainerCallback):
-    #         @torch.no_grad()
-    #         def on_evaluate(self, args=None, state=None, control=None, model=None, **kwargs):
-    #             results = test_ppl(trainer.model, trainer.tokenizer, datasets=['wikitext2','c4'],ppl_seqlen=2048)
-    #             logger.info(results)
-    #             trainer.log(results)
-
-    #     trainer.add_callback(PPLvalCallback)
             
     train_dataloader = trainer.get_train_dataloader()
     # test_dataloader = trainer.get_test_dataloader()
@@ -752,149 +725,97 @@ def train():
     assert next(trainer.model.parameters()).is_cuda
     assert train_dataloader is not None
     
-    easgd = EASGD(models)
+    easgd = EASGD(models, alpha, beta, stickiness)
     train_losses, test_losses = easgd.train_easgd(train_dataloader, None)
     # train_losses, test_losses = easgd.train_regular(train_dataloader, None)
     # train_losses, test_losses = easgd.train_interleave(train_dataloader, model4)
     
     # Verifying the datatypes and parameter counts before training.
-    print_trainable_parameters(args, model1)
-    dtypes = {}
-    for _, p in model1.named_parameters():
-        dtype = p.dtype
-        if dtype not in dtypes: dtypes[dtype] = 0
-        dtypes[dtype] += p.numel()
-    total = 0
-    for k, v in dtypes.items(): total+= v
-    for k, v in dtypes.items():
-        print(k, v, v/total)
+    # print_trainable_parameters(args, model1)
+    # dtypes = {}
+    # for _, p in model1.named_parameters():
+    #     dtype = p.dtype
+    #     if dtype not in dtypes: dtypes[dtype] = 0
+    #     dtypes[dtype] += p.numel()
+    # total = 0
+    # for k, v in dtypes.items(): total+= v
+    # for k, v in dtypes.items():
+    #     print(k, v, v/total)
 
-    all_metrics = {"run_name": args.run_name}
-
-
-
+    # all_metrics = {"run_name": args.run_name}
+    del model1
+    del model2
+    del model3
+    torch.cuda.empty_cache()
+    gc.collect()
     print(args.output_dir)
-    # if args.do_train:
-    #     # logger.info("*** Train ***")
-    #     # train_result = trainer.train(args.resume_from_checkpoint)
-    #     # metrics = train_result.metrics
-    #     # trainer.log_metrics("train", metrics)
-    #     # trainer.save_metrics("train", metrics)
-    #     # trainer.save_state()
-    #     # all_metrics.update(metrics)
-    #     pass
     
+    
+import itertools
+import logging
 
-    # # Evaluation
-    # if args.do_eval:
-    #     logger.info("*** Evaluate ***")
-    #     metrics = trainer.evaluate(metric_key_prefix="eval")
-    #     trainer.log_metrics("eval", metrics)
-    #     trainer.save_metrics("eval", metrics)
-    #     all_metrics.update(metrics)
-    # # Prediction
-    # if args.do_predict:
-    #     logger.info("*** Predict ***")
-    #     prediction_output = trainer.predict(test_dataset=data_module['predict_dataset'],metric_key_prefix="predict")
-    #     prediction_metrics = prediction_output.metrics
-    #     predictions = prediction_output.predictions
-    #     predictions = np.where(predictions != -100, predictions, tokenizer.pad_token_id)
-    #     predictions = tokenizer.batch_decode(
-    #         predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
-    #     )
-    #     with open(os.path.join(args.output_dir, 'predictions.jsonl'), 'w') as fout:
-    #         for i, example in enumerate(data_module['predict_dataset']):
-    #             example['prediction_with_input'] = predictions[i].strip()
-    #             example['prediction'] = predictions[i].replace(example['input'], '').strip()
-    #             fout.write(json.dumps(example) + '\n')
-    #     print(prediction_metrics)
-    #     trainer.log_metrics("predict", prediction_metrics)
-    #     trainer.save_metrics("predict", prediction_metrics)
-    #     all_metrics.update(prediction_metrics)
+import smtplib, ssl
 
-    # if (args.do_train or args.do_eval or args.do_predict):
-    #     with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
-    #         fout.write(json.dumps(all_metrics))
+def send_email(message, subject=None):
+    if subject is None:
+        subject = "Crimson Update" 
+    if message is None:
+        message = "This message is sent from Python."
+    
+    port = 465  # For SSL
+    smtp_server = "smtp.gmail.com"
+    sender_email = "ritarka.samanta@gmail.com"  # Enter your address
+    receiver_email = "ritarka.samanta@gmail.com"  # Enter receiver address
+    password = "wzhq ckib pcco ekjp"
+    message = (
+        f"Subject: {subject}\n"
+        f"\n"
+        f"{message}"
+    )
 
-    # if args.eval_tasks != "" or args.do_mmlu_eval:
-    #     import lm_eval
-    #     from lm_eval.models.huggingface import HFLM
-    #     from lm_eval.utils import make_table
+    print(message)
 
-    # if args.eval_tasks != "":
-    #     task_list = args.eval_tasks.split(',')
-    #     lm_eval_model = HFLM(pretrained=model1, batch_size=32)
-    #     task_manager = lm_eval.tasks.TaskManager()
-    #     results = lm_eval.simple_evaluate( # call simple_evaluate
-    #     model=lm_eval_model,
-    #     tasks=task_list,
-    #     num_fewshot=0,
-    #     task_manager=task_manager,
-    #     )
-    #     logger.info(make_table(results))
-    #     total_acc = 0
-    #     for task in task_list:
-    #         total_acc += results['results'][task]['acc,none']
-    #     logger.info(f'Average Acc: {total_acc/len(task_list)*100:.2f}%')
-
-    # if args.do_mmlu_eval:
-    #     lm_eval_model = HFLM(pretrained=model1, batch_size=16)
-    #     task_manager = lm_eval.tasks.TaskManager()
-    #     results = lm_eval.simple_evaluate( # call simple_evaluate
-    #     model=lm_eval_model,
-    #     tasks=['mmlu'],
-    #     num_fewshot=5,
-    #     task_manager=task_manager,
-    #     cache_requests=True,
-    #     )
-    #     logger.info(make_table(results))
-    #     total_acc = 0
-    #     for task in results['results']:
-    #         total_acc += results['results'][task]['acc,none']
-    #     logger.info(f"Average MMLU Acc: {total_acc/len(results['results'])*100:.2f}%")
-
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(smtp_server, port, context=context) as server:
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, message)
+    
 if __name__ == "__main__":
     
-    import gc
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
-    
-    import torch.backends.cudnn as cudnn
-    cudnn.benchmark = True
+    try:
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        
+        import torch.backends.cudnn as cudnn
+        cudnn.benchmark = True
+
+        # Cuda 0
+        # alpha_list = [0, 0.00005, 0.0001]
+        # beta_list = [0.95, 1]
+        # stickiness_list = [5, 7, 10]
+        
+        # Cuda 1
+        alpha_list = [0, 0.000025, 0.000075, 0.0002]      # 4
+        beta_list = [0.95, 1.0, 1.1, 1.2]                 # 4
+        stickiness_list = [5, 9, 12]                      # 4
+        # Total: 4 × 4 × 3 = 64 combinations
 
 
-    train()
+        for alpha, beta, stickiness in itertools.product(alpha_list, beta_list, stickiness_list):
+            logging.info(f"Running alpha={alpha}, beta={beta}, stickiness={stickiness}")
+            
+            result = train(alpha=alpha, beta=beta, stickiness=stickiness)
+            
+            gc.collect()
+            torch.cuda.empty_cache()
 
+            logging.info(f"alpha={alpha}, beta={beta}, stickiness={stickiness}")
 
-"""
-{'loss': 3.1468, 'grad_norm': 36.760902404785156, 'learning_rate': 2.5e-06, 'epoch': 0.0}                                                                        
-{'loss': 3.2766, 'grad_norm': 49.082725524902344, 'learning_rate': 5e-06, 'epoch': 0.01}                                                                         
-{'loss': 3.1771, 'grad_norm': 26.532615661621094, 'learning_rate': 7.500000000000001e-06, 'epoch': 0.01}                                                         
-{'loss': 3.1338, 'grad_norm': 25.933536529541016, 'learning_rate': 1e-05, 'epoch': 0.02}                                                                         
-{'loss': 2.9631, 'grad_norm': 11.033796310424805, 'learning_rate': 1.25e-05, 'epoch': 0.02}                                                                      
-{'loss': 2.7949, 'grad_norm': 16.794940948486328, 'learning_rate': 1.5000000000000002e-05, 'epoch': 0.02}                                                        
-{'loss': 2.8053, 'grad_norm': 11.00554370880127, 'learning_rate': 1.7500000000000002e-05, 'epoch': 0.03}                                                         
-{'loss': 2.8361, 'grad_norm': 12.150263786315918, 'learning_rate': 2e-05, 'epoch': 0.03}                                                                         
-{'loss': 2.5876, 'grad_norm': 10.196847915649414, 'learning_rate': 1.9999197656053288e-05, 'epoch': 0.04}                                                        
-{'loss': 2.7587, 'grad_norm': 6.955831050872803, 'learning_rate': 1.9996790752964305e-05, 'epoch': 0.04}                                                         
-{'loss': 2.6696, 'grad_norm': 6.497739315032959, 'learning_rate': 1.9992779676965884e-05, 'epoch': 0.04}                                                         
-{'loss': 2.3153, 'grad_norm': 8.48418140411377, 'learning_rate': 1.998716507171053e-05, 'epoch': 0.05}                                                           
-{'loss': 2.5931, 'grad_norm': 7.923129081726074, 'learning_rate': 1.9979947838167152e-05, 'epoch': 0.05}                                                         
-{'loss': 2.7494, 'grad_norm': 4.34723424911499, 'learning_rate': 1.9971129134476474e-05, 'epoch': 0.05}                                                          
-{'loss': 2.7559, 'grad_norm': 2.928806781768799, 'learning_rate': 1.9960710375765212e-05, 'epoch': 0.06}                                                         
-{'loss': 2.505, 'grad_norm': 3.3300206661224365, 'learning_rate': 1.994869323391895e-05, 'epoch': 0.06}                                                          
-{'loss': 2.6401, 'grad_norm': 2.6023330688476562, 'learning_rate': 1.9935079637313906e-05, 'epoch': 0.07}                                                        
-{'loss': 2.5097, 'grad_norm': 3.2068424224853516, 'learning_rate': 1.991987177050743e-05, 'epoch': 0.07}                                                         
-{'loss': 2.4963, 'grad_norm': 2.491368293762207, 'learning_rate': 1.9903072073887507e-05, 'epoch': 0.07}                                                         
-{'loss': 2.7886, 'grad_norm': 2.6198699474334717, 'learning_rate': 1.9884683243281117e-05, 'epoch': 0.08}                                                        
-{'loss': 2.615, 'grad_norm': 2.111182928085327, 'learning_rate': 1.9864708229521637e-05, 'epoch': 0.08}                                                          
-{'loss': 2.5648, 'grad_norm': 2.416806221008301, 'learning_rate': 1.9843150237975343e-05, 'epoch': 0.09}                                                         
-{'loss': 2.5197, 'grad_norm': 2.5512654781341553, 'learning_rate': 1.9820012728027044e-05, 'epoch': 0.09}                                                        
-{'loss': 2.3437, 'grad_norm': 3.1389317512512207, 'learning_rate': 1.9795299412524948e-05, 'epoch': 0.09}                                                        
-{'loss': 2.6723, 'grad_norm': 2.0275588035583496, 'learning_rate': 1.976901425718487e-05, 'epoch': 0.1}                                                          
-{'loss': 2.4105, 'grad_norm': 2.005434274673462, 'learning_rate': 1.9741161479953872e-05, 'epoch': 0.1}                                                          
-{'loss': 2.2706, 'grad_norm': 2.812422037124634, 'learning_rate': 1.9711745550333392e-05, 'epoch': 0.11}                                                         
-{'loss': 2.4461, 'grad_norm': 2.4632608890533447, 'learning_rate': 1.9680771188662044e-05, 'epoch': 0.11}                                                        
-{'loss': 2.3819, 'grad_norm': 2.072753667831421, 'learning_rate': 1.9648243365358145e-05, 'epoch': 0.11}                                                         
-"""
+    except Exception as e:
+        print(f"Error during training: {e}")
+        send_email(
+            message=f"Error during training: {e}",
+            subject="Training Error"
+        )

@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0 python main_e2e_qp.py \
+CUDA_VISIBLE_DEVICES=1 python main_e2e_qp.py \
     --quant_model_path ./output/block_ap_models/Meta-Llama-3-8B-Copy \
     --model_family Llama-3 \
     --wbits 2 \

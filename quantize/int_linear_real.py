@@ -18,6 +18,22 @@ from quantize.utils import get_named_linears,set_op_by_name
 logger = getLogger(__name__)
 
 
+def round_ste(x: torch.Tensor):
+    """
+    Implement Straight-Through Estimator for rounding operation.
+    """
+    return (x.round() - x).detach() + x
+
+def round_up_ste(x: torch.Tensor):
+    return (x.ceil() - x).detach() + x
+
+def round_down_ste(x: torch.Tensor):
+    return (x.floor() - x).detach() + x
+
+def clamp_ste(x: torch.Tensor, min, max):
+    return (x.clamp(min,max) - x).detach() + x
+
+
 class TritonModuleMixin:
     @classmethod
     def warmup(cls, model, transpose=False, seqlen=2048):
@@ -76,6 +92,18 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             self.register_buffer('bias', torch.zeros((outfeatures), dtype=torch.float16))
         else:
             self.bias = None
+            
+            
+        self.rounding_func = None
+        if self.quant_type == self.QuantType.REGULAR:
+            self.rounding_func = round_ste
+        elif self.quant_type == self.QuantType.UP:
+            self.rounding_func = round_up_ste
+        elif self.quant_type == self.QuantType.DOWN:
+            self.rounding_func = round_down_ste
+        else:
+            raise NotImplementedError("Only REGULAR, UP, DOWN quantization are supported.")
+
 
         self.zeros_dim0, self.zeros_dim1 = self.scales.shape
         self.trainable = trainable
@@ -181,19 +209,54 @@ class QuantLinear(nn.Module, TritonModuleMixin):
                 
         qzeros = qzeros.astype(np.int32)
         self.qzeros = torch.from_numpy(qzeros)
+        
+    def fake_quant(self, x):
+        scale = clamp_ste(self.scale,1e-4, 1e4)
+        round_zero_point = clamp_ste(round_up_ste(self.zero_point), self.qmin, self.qmax)
+        
+        dim1, dim2 = x.shape
+        x = x.reshape(-1, self.group_size)
+        x_int = round_up_ste(x / scale)
+        if round_zero_point is not None:
+            x_int = x_int.add(round_zero_point)
+        x_int = x_int.clamp(self.qmin, self.qmax)
+        x_dequant = x_int
+        if round_zero_point is not None:
+            x_dequant = x_dequant.sub(round_zero_point)
+        x_dequant = x_dequant.mul(scale)
+        if self.group_size:
+            x_dequant = x_dequant.reshape(dim1, dim2)
+        return x_dequant
 
     def forward(self, x):
         if self.use_fake:
             weight = self.weight
             if self.fake_transpose:
                 weight = weight.transpose(0,1)
+                
         else:
+            # Unpack and dequantize weights, scales, and zeros
             weight = dequant_dim0(self.qweight, self.bits, self.maxq, self.infeatures, self.outfeatures)
-            dim0, dim1 = weight.shape
-            # dim2 = (dim1*dim0)//self.group_size
             zeros = dequant_dim1(self.qzeros, self.bits, self.maxq, self.zeros_dim0, self.zeros_dim1)
-            weight = ((weight.view(-1, self.group_size, dim1) - zeros.view(-1, 1, dim1)) * self.scales.view(-1, 1, dim1)).reshape(dim0, dim1)
-        # out = torch.matmul(x, weight)
+
+            dim0, dim1 = weight.shape
+            sv = self.scales.view(-1, 1, dim1)
+            zv = zeros.view(-1, 1, dim1)
+            
+            weight = ((weight.view(-1, self.group_size, dim1) - zv) * sv)
+                        
+            # we now have full-precision weights, lets fake quantize them
+            weight = self.rounding_func(weight / sv + zv)
+            weight = (weight - zv) * sv
+            weight = weight.reshape(dim0, dim1)
+
+        # else:
+        #     weight = dequant_dim0(self.qweight, self.bits, self.maxq, self.infeatures, self.outfeatures)
+        #     dim0, dim1 = weight.shape
+        #     # dim2 = (dim1*dim0)//self.group_size
+        #     zeros = dequant_dim1(self.qzeros, self.bits, self.maxq, self.zeros_dim0, self.zeros_dim1)
+        #     weight = ((weight.view(-1, self.group_size, dim1) - zeros.view(-1, 1, dim1)) * self.scales.view(-1, 1, dim1)).reshape(dim0, dim1)
+
         out = torch.matmul(x, weight.to(x.dtype))
         out = out + self.bias if self.bias is not None else out
         return out

@@ -22,10 +22,6 @@ def round_down_ste(x: torch.Tensor):
 def clamp_ste(x: torch.Tensor, min, max):
     return (x.clamp(min,max) - x).detach() + x
 
-def clamp_ste(x: torch.Tensor, min, max):
-    return (x.clamp(min,max) - x).detach() + x
-
-
 class UniformAffineQuantizer(nn.Module):
     def __init__(
         self,
