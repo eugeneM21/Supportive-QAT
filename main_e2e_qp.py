@@ -766,7 +766,7 @@ def send_email(message, subject=None):
     smtp_server = "smtp.gmail.com"
     sender_email = "ritarka.samanta@gmail.com"  # Enter your address
     receiver_email = "ritarka.samanta@gmail.com"  # Enter receiver address
-    password = "wzhq ckib pcco ekjp"
+    password = ""
     message = (
         f"Subject: {subject}\n"
         f"\n"
