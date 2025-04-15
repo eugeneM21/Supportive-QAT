@@ -20,6 +20,7 @@ from datautils_block import BlockTrainDataset
 from torch.utils.data import DataLoader
 import shutil
 import os
+import wandb
 
 def update_dataset(layer, dataset, dev, attention_mask, position_ids):
     with torch.no_grad():
@@ -162,6 +163,7 @@ def block_ap(
     loss_func = torch.nn.MSELoss()
     for block_index in range(len(layers)):
         logger.info(f"=== Start quantize blocks {block_index}===")
+        wandb.init(project="block_ap_training",name=f"block{block_index}_{args.model.split('/')[-1]}_w{args.wbits}_g{args.group_size}",config=vars(args))
         # step 6.1: replace torch.nn.Linear with QuantLinear for QAT
         layer = layers[block_index].to(dev)
         qlayer = copy.deepcopy(layer)
@@ -262,6 +264,17 @@ def block_ap(
                 val_loss_mean = torch.stack(val_loss_list).mean()
                 norm_mean = torch.stack(norm_list).mean()
                 logger.info(f"blocks {block_index} epoch {epoch} recon_loss:{loss_mean} val_loss:{val_loss_mean} quant_lr:{quant_scheduler.get_lr()[0]} norm:{norm_mean:.8f} max memory_allocated {torch.cuda.max_memory_allocated(dev) / 1024**2} time {time.time()-start_time} ")
+                wandb.log({
+                    "block": block_index,
+                    "epoch": epoch,
+                    "train_loss": loss_mean.item(),
+                    "val_loss": val_loss_mean.item(),
+                    "norm": norm_mean.item(),
+                    "quant_lr": quant_scheduler.get_lr()[0],
+                    "memory_allocated_MB": torch.cuda.max_memory_allocated(dev) / 1024**2,
+                    "time_per_epoch_sec": time.time() - start_time
+                })
+
                 if val_loss_mean < best_val_loss:
                     best_val_loss = val_loss_mean
                 else:
@@ -297,6 +310,7 @@ def block_ap(
                 set_op_by_name(qlayer, name, q_linear)       
                 logger.info(f"pack quantized {name} finished")
                 del module        
+        wandb.finish()
         del layer
         torch.cuda.empty_cache()
 

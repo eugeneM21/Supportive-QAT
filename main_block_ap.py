@@ -13,8 +13,10 @@ from pathlib import Path
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
 from quantize.int_linear_real import load_quantized_model
 from accelerate import infer_auto_device_map, dispatch_model
+import wandb
 
-
+# os.environ["WANDB_MODE"] = "online"
+# os.environ["WANDB_API_KEY"] = "01c3e602dc2046612fba7cb16a7956fec2dc7110"
 
 
 torch.backends.cudnn.benchmark = True
@@ -28,7 +30,7 @@ def evaluate(model, tokenizer, args, logger):
     '''
     # import pdb;pdb.set_trace()
     block_class_name = model.model.layers[0].__class__.__name__
-    device_map = infer_auto_device_map(model, max_memory={1: args.max_memory for i in range(torch.cuda.device_count())}, no_split_module_classes=[block_class_name])
+    device_map = infer_auto_device_map(model, max_memory={i: args.max_memory for i in range(torch.cuda.device_count())}, no_split_module_classes=[block_class_name])
     model = dispatch_model(model, device_map=device_map)
     results = {}
 
@@ -100,6 +102,8 @@ def main():
 
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     args = parser.parse_args()
+
+    wandb.init(project="block_ap_training",  name=f"{args.model.split('/')[-1]}_w{args.wbits}_g{args.group_size}", config=vars(args))
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
