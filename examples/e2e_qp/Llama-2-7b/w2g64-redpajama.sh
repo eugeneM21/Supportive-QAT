@@ -1,5 +1,5 @@
-CUDA_VISIBLE_DEVICES=1 python main_e2e_qp.py \
-    --quant_model_path ./output/block_ap_models/Meta-Llama-3-8B-Copy \
+CUDA_VISIBLE_DEVICES=0 python main_e2e_qp.py \
+    --quant_model_path /home/ubuntu/new_clone/Supportive-QAT/output/block_ap_models/Meta-Llama-3-8B-Co \
     --model_family Llama-3 \
     --wbits 2 \
     --group_size 64 \
@@ -10,7 +10,7 @@ CUDA_VISIBLE_DEVICES=1 python main_e2e_qp.py \
     --do_train True \
     --pt_context_len 4096 \
     --per_device_train_batch_size 1 \
-    --per_device_eval_batch_size 4 \
+    --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 8 \
     --logging_steps 1 \
     --save_strategy epoch \

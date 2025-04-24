@@ -672,7 +672,9 @@ def train(alpha=0.001, beta=0.99, stickiness=5):
     checkpoint_dir, completed_training = get_last_checkpoint(args.output_dir)
     if completed_training:
         print('Detected that training was already completed!')
-
+    print("args: ", args)
+    print("checkpoint_dir: ", checkpoint_dir)
+    print("QuantLinear.QuantType.REGULAR: ", QuantLinear.QuantType.REGULAR)
     model1, tokenizer = get_accelerate_model(args, checkpoint_dir, QuantLinear.QuantType.REGULAR)
     model2, _         = get_accelerate_model(args, checkpoint_dir, QuantLinear.QuantType.UP)
     model3, _         = get_accelerate_model(args, checkpoint_dir, QuantLinear.QuantType.DOWN)
@@ -781,15 +783,14 @@ def send_email(message, subject=None):
         server.sendmail(sender_email, receiver_email, message)
     
 if __name__ == "__main__":
-    
-    try:
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
         
-        import torch.backends.cudnn as cudnn
-        cudnn.benchmark = True
+    import torch.backends.cudnn as cudnn
+    cudnn.benchmark = True
 
         # Cuda 0
         # alpha_list = [0, 0.00005, 0.0001]
@@ -797,25 +798,59 @@ if __name__ == "__main__":
         # stickiness_list = [5, 7, 10]
         
         # Cuda 1
-        alpha_list = [0, 0.000025, 0.000075, 0.0002]      # 4
-        beta_list = [0.95, 1.0, 1.1, 1.2]                 # 4
-        stickiness_list = [5, 9, 12]                      # 4
+    #alpha_list = [0, 0.000025, 0.000075, 0.0002]      # 4
+    #beta_list = [0.95, 1.0, 1.1, 1.2]                 # 4
+    #stickiness_list = [5, 9, 12]                      # 4
+    alpha_list = [0.000075]      # 4
+    beta_list = [0.95]                 # 4
+    stickiness_list = [9]                      # 4
         # Total: 4 × 4 × 3 = 64 combinations
 
 
-        for alpha, beta, stickiness in itertools.product(alpha_list, beta_list, stickiness_list):
-            logging.info(f"Running alpha={alpha}, beta={beta}, stickiness={stickiness}")
+    for alpha, beta, stickiness in itertools.product(alpha_list, beta_list, stickiness_list):
+        logging.info(f"Running alpha={alpha}, beta={beta}, stickiness={stickiness}")
             
-            result = train(alpha=alpha, beta=beta, stickiness=stickiness)
+        result = train(alpha=alpha, beta=beta, stickiness=stickiness)
             
-            gc.collect()
-            torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.empty_cache()
 
-            logging.info(f"alpha={alpha}, beta={beta}, stickiness={stickiness}")
+        logging.info(f"alpha={alpha}, beta={beta}, stickiness={stickiness}")
+    
+    # try:
+    #     import gc
+    #     gc.collect()
+    #     torch.cuda.empty_cache()
+    #     torch.cuda.ipc_collect()
+        
+    #     import torch.backends.cudnn as cudnn
+    #     cudnn.benchmark = True
 
-    except Exception as e:
-        print(f"Error during training: {e}")
-        send_email(
-            message=f"Error during training: {e}",
-            subject="Training Error"
-        )
+    #     # Cuda 0
+    #     # alpha_list = [0, 0.00005, 0.0001]
+    #     # beta_list = [0.95, 1]
+    #     # stickiness_list = [5, 7, 10]
+        
+    #     # Cuda 1
+    #     alpha_list = [0, 0.000025, 0.000075, 0.0002]      # 4
+    #     beta_list = [0.95, 1.0, 1.1, 1.2]                 # 4
+    #     stickiness_list = [5, 9, 12]                      # 4
+    #     # Total: 4 × 4 × 3 = 64 combinations
+
+
+    #     for alpha, beta, stickiness in itertools.product(alpha_list, beta_list, stickiness_list):
+    #         logging.info(f"Running alpha={alpha}, beta={beta}, stickiness={stickiness}")
+            
+    #         result = train(alpha=alpha, beta=beta, stickiness=stickiness)
+            
+    #         gc.collect()
+    #         torch.cuda.empty_cache()
+
+    #         logging.info(f"alpha={alpha}, beta={beta}, stickiness={stickiness}")
+
+    # except Exception as e:
+    #     print(f"Error during training: {e}")
+    #     # send_email(
+    #     #     message=f"Error during training: {e}",
+    #     #     subject="Training Error"
+    #     # )

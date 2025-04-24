@@ -238,6 +238,20 @@ def block_ap(
                     optimizer.zero_grad()
                     norm = loss_scaler(loss, optimizer,parameters=trainable_parameters(qlayer)).cpu()
                     norm_list.append(norm.data)
+                    logger.info(
+                        f"[Block {block_index} | Epoch {epoch} | Batch {index}] "
+                        f"Loss: {loss.item():.6f} | Norm: {norm.item():.6f}"
+                    )
+                    wandb.log({
+                        "block": block_index,
+                        "epoch": epoch,
+                        "batch": index,
+                        "batch_loss": loss.item(),
+                        "batch_norm": norm.item(),
+                        "step": index,
+                    })
+                    print("Loss: ", reconstruction_loss)
+                    #optimizer.step()
 
                     # adjust lr
                     if args.quant_lr > 0:
@@ -263,17 +277,17 @@ def block_ap(
                 loss_mean = torch.stack(loss_list)[-(train_mean_num-1):].mean()
                 val_loss_mean = torch.stack(val_loss_list).mean()
                 norm_mean = torch.stack(norm_list).mean()
-                logger.info(f"blocks {block_index} epoch {epoch} recon_loss:{loss_mean} val_loss:{val_loss_mean} quant_lr:{quant_scheduler.get_lr()[0]} norm:{norm_mean:.8f} max memory_allocated {torch.cuda.max_memory_allocated(dev) / 1024**2} time {time.time()-start_time} ")
-                wandb.log({
-                    "block": block_index,
-                    "epoch": epoch,
-                    "train_loss": loss_mean.item(),
-                    "val_loss": val_loss_mean.item(),
-                    "norm": norm_mean.item(),
-                    "quant_lr": quant_scheduler.get_lr()[0],
-                    "memory_allocated_MB": torch.cuda.max_memory_allocated(dev) / 1024**2,
-                    "time_per_epoch_sec": time.time() - start_time
-                })
+                # logger.info(f"blocks {block_index} epoch {epoch} recon_loss:{loss_mean} val_loss:{val_loss_mean} quant_lr:{quant_scheduler.get_lr()[0]} norm:{norm_mean:.8f} max memory_allocated {torch.cuda.max_memory_allocated(dev) / 1024**2} time {time.time()-start_time} ")
+                # wandb.log({
+                #     "block": block_index,
+                #     "epoch": epoch,
+                #     "train_loss": loss_mean.item(),
+                #     "val_loss": val_loss_mean.item(),
+                #     "norm": norm_mean.item(),
+                #     "quant_lr": quant_scheduler.get_lr()[0],
+                #     "memory_allocated_MB": torch.cuda.max_memory_allocated(dev) / 1024**2,
+                #     "time_per_epoch_sec": time.time() - start_time
+                # })
 
                 if val_loss_mean < best_val_loss:
                     best_val_loss = val_loss_mean

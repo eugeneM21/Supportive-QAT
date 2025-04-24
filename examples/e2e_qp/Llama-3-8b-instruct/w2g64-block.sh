@@ -1,0 +1,16 @@
+CUDA_VISIBLE_DEVICES=0 python main_block_ap.py \
+--model ./Meta-Llama-3-8B-Instruct \
+--output_dir ./output/block_ap_log/Meta-Llama-3-8B-Copy \
+--net Llama-3 \
+--calib_dataset wikitext2 \
+--train_size 512 \
+--val_size 32 \
+--training_seqlen 1024 \
+--wbits 2 \
+--group_size 64 \
+--quant_lr 1e-4 \
+--weight_lr 2e-5 \
+--real_quant \
+--eval_ppl \
+--eval_tasks piqa,arc_easy,arc_challenge,hellaswag,winogrande \
+--save_quant_dir ./output/block_ap_models/Meta-Llama-3-8B-Co
